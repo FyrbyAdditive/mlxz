@@ -1,0 +1,36 @@
+name: mlxz
+options:
+  bundleIdPrefix: com.mlxz
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+packages:
+  MLXZKit:
+    path: .
+
+targets:
+  mlxz:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    dependencies:
+      - package: MLXZKit
+        product: MLXZUI
+      - package: MLXZKit
+        product: MLXZInference
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mlxz.app
+        PRODUCT_NAME: mlxz
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_CFBundleDisplayName: mlxz
+        CODE_SIGN_ENTITLEMENTS: App/mlxz.entitlements
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_HARDENED_RUNTIME: YES

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Accept incoming connections (the local OpenAI-compatible server). -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<!-- Outgoing connections (HuggingFace downloads). -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Developer tool: run without the App Sandbox so the HF cache lives in the standard
+	     ~/.cache/huggingface location and large model files aren't constrained. Revisit later. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

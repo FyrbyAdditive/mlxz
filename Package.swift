@@ -45,10 +45,11 @@ var targets: [Target] = [
         dependencies: ["MLXZCore", .product(name: "Logging", package: "swift-log")],
         swiftSettings: v6
     ),
-    // MARK: - UI: SwiftUI views + view models.
+    // MARK: - UI: SwiftUI views + view models. Drives Core/Server abstractions; the concrete
+    // MLX loader is injected at the App composition root (so the UI stays swift-build-testable).
     .target(
         name: "MLXZUI",
-        dependencies: ["MLXZCore", "MLXZHub"],
+        dependencies: ["MLXZCore", "MLXZHub", "MLXZServer"],
         swiftSettings: v6
     ),
     // MARK: - Tests (pure-logic, run under `swift test`)
