@@ -1,4 +1,5 @@
 import Foundation
+import CoreImage
 import MLXZCore
 import MLXLMCommon
 
@@ -19,8 +20,13 @@ extension MLXInferenceEngine {
 
         let images: [UserInput.Image] = message.content.compactMap { part in
             switch part {
-            case .imageURL(let url): return .url(url)
-            case .imageData, .text: return nil
+            case .imageURL(let url):
+                return .url(url)
+            case .imageData(let data):
+                // Decode inline (base64 data-URL) image bytes into a CIImage for VLMs.
+                return CIImage(data: data).map { UserInput.Image.ciImage($0) }
+            case .text:
+                return nil
             }
         }
 

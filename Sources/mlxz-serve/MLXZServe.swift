@@ -55,10 +55,12 @@ struct MLXZServe: AsyncParsableCommand {
         try await manager.load(descriptor)
         logger.info("model ready", metadata: ["model": .string(model)])
 
+        let localStore = LocalModelStore()
         let server = InferenceServer(
             manager: manager,
             logger: logger,
-            logSink: { line in logger.info("\(line)") }
+            logSink: { line in logger.info("\(line)") },
+            extraModelIDs: { localStore.installedModels().map(\.descriptor.repoID) }
         )
         try await server.start(ServerConfig(host: host, port: port, apiKey: apiKey))
 

@@ -46,8 +46,9 @@ struct ChatCompletionsEndpoint: OpenAIEndpoint {
             for p in ps {
                 if p.type == "text", let t = p.text {
                     parts.append(.text(t))
-                } else if p.type == "image_url", let urlStr = p.imageURL?.url, let url = URL(string: urlStr) {
-                    parts.append(.imageURL(url))
+                } else if p.type == "image_url", let urlStr = p.imageURL?.url,
+                          let imagePart = ImageContent.part(fromURLString: urlStr) {
+                    parts.append(imagePart)
                 }
             }
         case .null, .none:

@@ -26,20 +26,24 @@ public final class AppModel {
     public let logStore = LogStore()
     public let catalog = HubCatalog()
     public let localStore = LocalModelStore()
+    public let downloads: DownloadManager
 
     private let manager: ModelManager
     private let server: InferenceServer
     private let logger = Logger(label: "mlxz.app")
 
-    public init(loader: any ModelLoading) {
+    public init(loader: any ModelLoading, downloader: any ModelDownloading) {
+        self.downloads = DownloadManager(downloader: downloader)
         let logStore = self.logStore
         let manager = ModelManager(loader: loader)
         self.manager = manager
+        let store = self.localStore
         self.server = InferenceServer(
             manager: manager,
             logSink: { line in
                 Task { @MainActor in logStore.append(line) }
-            }
+            },
+            extraModelIDs: { store.installedModels().map(\.descriptor.repoID) }
         )
     }
 
@@ -54,6 +58,17 @@ public final class AppModel {
 
     public func installedModels() -> [InstalledModel] {
         localStore.installedModels()
+    }
+
+    // MARK: - Downloads
+
+    public func startDownload(_ repoID: String) {
+        logStore.append("Downloading \(repoID)…")
+        downloads.start(repoID)
+    }
+
+    public func cancelDownload(_ repoID: String) {
+        downloads.cancel(repoID)
     }
 
     // MARK: - Model lifecycle

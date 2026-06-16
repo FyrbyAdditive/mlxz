@@ -5,7 +5,7 @@ import MLXZInference
 /// The macOS app. Composition root: supplies the concrete MLX loader to the UI's AppModel.
 @main
 struct MLXZApp: App {
-    @State private var model = AppModel(loader: MLXModelLoader())
+    @State private var model = AppModel(loader: MLXModelLoader(), downloader: MLXModelDownloader())
 
     var body: some Scene {
         WindowGroup {

@@ -12,6 +12,9 @@ struct RouterBuilder {
     let gate: GenerationGate
     let apiKey: String?
     let logSink: (@Sendable (String) -> Void)?
+    /// Optional source of additional servable model ids for `/v1/models` (e.g. installed models).
+    /// The currently-loaded model is always included.
+    var extraModelIDs: (@Sendable () -> [String])?
 
     func build() -> Router<BasicRequestContext> {
         let router = Router()
@@ -21,8 +24,8 @@ struct RouterBuilder {
         }
 
         register(ChatCompletionsEndpoint(), on: router)
+        register(ResponsesEndpoint(), on: router)
         // Future endpoints land here with one line each:
-        // register(ResponsesEndpoint(), on: router)
         // register(ModelsListEndpoint(), on: router)
 
         router.get("/health") { _, _ in
@@ -32,7 +35,45 @@ struct RouterBuilder {
                 body: .init(byteBuffer: ByteBuffer(string: #"{"status":"ok"}"#))
             )
         }
+
+        // GET /v1/models — lists the loaded model plus any extra servable ids.
+        let manager = self.manager
+        let extraModelIDs = self.extraModelIDs
+        router.get("/v1/models") { _, _ -> Response in
+            var ids: [String] = []
+            if let loaded = await manager.currentEngine()?.descriptor.repoID {
+                ids.append(loaded)
+            }
+            ids.append(contentsOf: extraModelIDs?() ?? [])
+            // De-dup preserving order.
+            var seen = Set<String>()
+            let unique = ids.filter { seen.insert($0).inserted }
+            let data = (try? Self.modelsListJSON(unique)) ?? Data("{\"object\":\"list\",\"data\":[]}".utf8)
+            return Response(
+                status: .ok,
+                headers: [.contentType: "application/json"],
+                body: .init(byteBuffer: ByteBuffer(data: data))
+            )
+        }
         return router
+    }
+
+    /// Build the OpenAI `/v1/models` list body.
+    static func modelsListJSON(_ ids: [String]) throws -> Data {
+        let created = OpenAIID.timestamp()
+        let items: [OAIJSON] = ids.map { id in
+            .object([
+                ("id", .string(id)),
+                ("object", .string("model")),
+                ("created", .int(created)),
+                ("owned_by", .string("mlxz")),
+            ])
+        }
+        let body: OAIJSON = .object([
+            ("object", .string("list")),
+            ("data", .array(items)),
+        ])
+        return try body.serialized()
     }
 
     /// The generic handler shared by every endpoint: decode → validate → translate →
