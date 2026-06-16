@@ -8,8 +8,8 @@ import Foundation
 /// Run with: `MLXZ_INTEGRATION=1 xcodebuild test -scheme mlxz ...`
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["MLXZ_INTEGRATION"] == "1"))
 struct EngineIntegrationTests {
-    /// A small model keeps the download manageable.
-    static let testModel = ModelDescriptor(repoID: "mlx-community/Qwen3.6-0.6B-4bit")
+    /// A small model keeps the download manageable (verified ~300MB, qwen2 arch).
+    static let testModel = ModelDescriptor(repoID: "mlx-community/Qwen2.5-0.5B-Instruct-4bit")
 
     @Test func loadsAndGeneratesText() async throws {
         let loader = MLXModelLoader()
