@@ -87,9 +87,24 @@ curl -s http://127.0.0.1:8088/v1/chat/completions -H 'Content-Type: application/
    `chatLanguageModels.json`. It sets `apiType: chat-completions`, `toolCalling: true`, and `vision`
    per the model. The model then appears in the Copilot model picker and works in ask + agent modes.
 
+## Endpoints
+
+- `GET /health`
+- `GET /v1/models` — loaded + installed models
+- `POST /v1/chat/completions` — streaming + non-streaming, tool calling, image input
+- `POST /v1/responses` — structured streaming events + non-streaming, tool calling, image input
+
 ## Status
 
-Phase 1 (MVP) is complete and verified end-to-end: chat completions (streaming + non-streaming),
-tool calling, model download/load, and the GUI. Planned next: `/v1/responses`, the vision path,
-functional MTP speculative decoding, `/v1/models`, and embeddings. See
+**Phase 1 + 2 complete**, verified end-to-end against a real model:
+
+- Chat Completions and Responses APIs (both streaming + non-streaming + tool calling).
+- Vision input (`image_url` remote or base64 `data:` URL) → VLM image path.
+- `/v1/models`, HF catalog search, install enumeration, explicit downloads with progress.
+- GUI (model library/search/download, server control, logs) + menu bar.
+
+Known limitation: MTP/speculative decoding is a present-but-inert seam — mlx-swift-lm 3.31.3 has
+no native single-model MTP via `ModelContainer.generate`, so speculative requests use standard
+decoding (capability is still advertised). Planned next: embeddings (`MLXEmbedders`), legacy
+`/v1/completions`, draft-model speculative decoding, prefix/KV-cache reuse. See
 `.claude/plans/we-are-building-a-lovely-tiger.md`.
