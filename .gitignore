@@ -1,0 +1,17 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# App-local model cache (if ever placed in-repo)
+/models/
