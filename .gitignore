@@ -3,6 +3,9 @@
 .swiftpm/
 Package.resolved
 
+# xcodebuild (MLX targets)
+.xcode-build/
+
 # Xcode
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
@@ -15,3 +18,4 @@ xcuserdata/
 
 # App-local model cache (if ever placed in-repo)
 /models/
+.vscode/
