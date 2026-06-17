@@ -6,12 +6,14 @@ import MLXLMCommon
 /// that touches MLX. It maps our wire-independent `GenerationRequest` onto the package's
 /// stateless `generate(input:parameters:)` path and translates `Generation` events back.
 ///
-/// Speculative decoding (`request.speculative`): the seam is present, but mlx-swift-lm 3.31.3's
-/// `ModelContainer.generate` does not expose speculative decoding — `SpeculativeTokenIterator`
-/// requires a *separate* draft model and there is no native single-model MTP support yet. So a
-/// speculative request is served with standard decoding (correct output, just no speedup) and a
-/// note is logged. Capability `.speculative` is still advertised so the UI/Copilot can surface it;
-/// when upstream lands MTP/draft support, only this file changes.
+/// Speculative decoding (`request.speculative`): the seam is present but inert. mlx-swift-lm
+/// 3.31.3 has no native single-model MTP, and its draft-model path (`generate(...draftModel:)`)
+/// needs the *main* `ModelContext` and the *draft* `any LanguageModel` in one isolation domain —
+/// but `any LanguageModel` is non-Sendable and each model lives in its own `ModelContainer` actor,
+/// so a draft model cannot be moved into the main container's `perform`. Cleanly supporting it
+/// requires upstream to host both models in one container or expose a Sendable speculative entry
+/// point. Until then speculative requests use standard decoding (correct output, no speedup);
+/// `.speculative` is still advertised so the UI/Copilot can surface MTP models.
 public struct MLXInferenceEngine: InferenceEngine {
     public let descriptor: ModelDescriptor
     public let capabilities: ModelCapabilities

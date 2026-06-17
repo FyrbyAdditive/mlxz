@@ -17,6 +17,8 @@ struct RouterBuilder {
     var extraModelIDs: (@Sendable () -> [String])?
     /// Optional embedding manager; when set, `/v1/embeddings` is served.
     var embeddingManager: EmbeddingManager?
+    /// Optional sink fired once per completed generation with its token usage (for UI metrics).
+    var metricsSink: (@Sendable (TokenUsage) -> Void)?
 
     func build() -> Router<BasicRequestContext> {
         let router = Router()
@@ -110,6 +112,7 @@ struct RouterBuilder {
         let manager = self.manager
         let gate = self.gate
         let logSink = self.logSink
+        let metricsSink = self.metricsSink
 
         router.post(RouterPath(stringLiteral: E.path)) { request, context -> Response in
             let wire: E.WireRequest
@@ -147,11 +150,12 @@ struct RouterBuilder {
             logSink?("→ \(E.path) (\(genRequest.messages.count) messages, stream=\(endpoint.isStreaming(wire)))")
 
             if endpoint.isStreaming(wire) {
-                return makeStreamingResponse(endpoint: endpoint, wire: wire, modelID: modelID, engine: engine, request: genRequest, gate: gate)
+                return makeStreamingResponse(endpoint: endpoint, wire: wire, modelID: modelID, engine: engine, request: genRequest, gate: gate, metricsSink: metricsSink)
             } else {
                 do {
                     let stream = try await engine.generate(genRequest)
                     let aggregated = try await AggregatedResult.collect(from: stream)
+                    metricsSink?(aggregated.usage)
                     let data = try endpoint.encodeNonStreaming(aggregated, wire: wire, modelID: modelID)
                     await gate.release()
                     return Response(
@@ -176,7 +180,8 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
     modelID: String,
     engine: any InferenceEngine,
     request: GenerationRequest,
-    gate: GenerationGate
+    gate: GenerationGate,
+    metricsSink: (@Sendable (TokenUsage) -> Void)?
 ) -> Response {
     let encoder = endpoint.makeStreamEncoder(for: wire, modelID: modelID)
     let headers: HTTPFields = [
@@ -192,6 +197,7 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
             do {
                 let stream = try await engine.generate(request)
                 for try await event in stream {
+                    if case .completed(let result) = event { metricsSink?(result.usage) }
                     for frame in try encoder.encode(event) {
                         try await writer.write(frame.byteBuffer(allocator: allocator))
                     }

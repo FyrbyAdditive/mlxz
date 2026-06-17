@@ -62,7 +62,12 @@ struct MLXZServe: AsyncParsableCommand {
             logger: logger,
             logSink: { line in logger.info("\(line)") },
             extraModelIDs: { localStore.installedModels().map(\.descriptor.repoID) },
-            embeddingManager: embeddingManager
+            embeddingManager: embeddingManager,
+            metricsSink: { usage in
+                if let tps = usage.tokensPerSecond {
+                    logger.info("generated \(usage.completionTokens) tokens at \(String(format: "%.1f", tps)) tok/s")
+                }
+            }
         )
         try await server.start(ServerConfig(host: host, port: port, apiKey: apiKey))
 

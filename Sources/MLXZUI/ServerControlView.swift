@@ -18,6 +18,16 @@ struct ServerControlView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if model.serverRunning {
+                    LabeledContent("Requests served") {
+                        Text("\(model.requestsServed)").foregroundStyle(.secondary)
+                    }
+                    if let tps = model.lastTokensPerSecond {
+                        LabeledContent("Last speed") {
+                            Text("\(tps, format: .number.precision(.fractionLength(1))) tok/s").foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
 
             Section("Binding") {

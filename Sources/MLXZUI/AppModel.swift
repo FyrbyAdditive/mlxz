@@ -10,6 +10,22 @@ import MLXZServer
 ///
 /// The concrete MLX loader is injected (so this module stays free of MLX and builds under
 /// `swift build`); the App target supplies `MLXModelLoader`.
+/// Observable holder for live server metrics. Separate from `AppModel` so the server's metrics
+/// sink can be wired during `AppModel.init` without capturing the not-yet-initialized `self`.
+@MainActor
+@Observable
+public final class ServerMetrics {
+    public private(set) var requestsServed = 0
+    public private(set) var lastTokensPerSecond: Double?
+
+    public init() {}
+
+    func record(_ usage: TokenUsage) {
+        requestsServed += 1
+        if let tps = usage.tokensPerSecond { lastTokensPerSecond = tps }
+    }
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -23,14 +39,24 @@ public final class AppModel {
     public private(set) var modelState: ModelManager.State = .empty
     public private(set) var serverRunning: Bool = false
 
+    // Live server metrics (an observable holder so the server's sink can update it without
+    // capturing `self` during init).
+    public let metrics = ServerMetrics()
+    public var requestsServed: Int { metrics.requestsServed }
+    public var lastTokensPerSecond: Double? { metrics.lastTokensPerSecond }
+
     public let logStore = LogStore()
     public let catalog = HubCatalog()
     public let localStore = LocalModelStore()
     public let downloads: DownloadManager
 
+    /// When true (default), the model is auto-unloaded on critical memory pressure.
+    public var autoUnloadOnMemoryPressure: Bool = true
+
     private let manager: ModelManager
     private let server: InferenceServer
     private let logger = Logger(label: "mlxz.app")
+    private var memoryMonitor: MemoryPressureMonitor?
 
     public init(
         loader: any ModelLoading,
@@ -48,8 +74,22 @@ public final class AppModel {
                 Task { @MainActor in logStore.append(line) }
             },
             extraModelIDs: { store.installedModels().map(\.descriptor.repoID) },
-            embeddingManager: EmbeddingManager(loader: embeddingLoader)
+            embeddingManager: EmbeddingManager(loader: embeddingLoader),
+            metricsSink: { [metrics] usage in
+                Task { @MainActor in metrics.record(usage) }
+            }
         )
+
+        // Auto-unload the model on critical memory pressure to avoid an OS kill.
+        memoryMonitor = MemoryPressureMonitor { [weak self] isCritical in
+            guard isCritical else { return }
+            Task { @MainActor in
+                guard let self, self.autoUnloadOnMemoryPressure,
+                      self.modelState.loadedDescriptor != nil else { return }
+                self.logStore.append("⚠️ Critical memory pressure — unloading model.")
+                await self.unload()
+            }
+        }
     }
 
     /// Begin observing the manager's state stream. Call from a SwiftUI `.task {}`.
