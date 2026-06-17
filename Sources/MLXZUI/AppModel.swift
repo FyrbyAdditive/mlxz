@@ -167,6 +167,10 @@ public final class AppModel {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Don't reuse pooled connections: a prior streamed reply can leave a keep-alive
+        // connection in a state URLSession marks unusable, which surfaced as
+        // "could not connect" on the *second* playground message.
+        request.setValue("close", forHTTPHeaderField: "Connection")
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
@@ -177,11 +181,19 @@ public final class AppModel {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (bytes, _) = try await URLSession.shared.bytes(for: request)
+        // A fresh ephemeral session per request avoids cross-request connection pooling entirely.
+        let config = URLSessionConfiguration.ephemeral
+        config.httpMaximumConnectionsPerHost = 1
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+
+        var sawDone = false
+        let (bytes, _) = try await session.bytes(for: request)
         for try await line in bytes.lines {
             guard line.hasPrefix("data: ") else { continue }
             let payload = String(line.dropFirst(6))
-            if payload == "[DONE]" { break }
+            if payload == "[DONE]" { sawDone = true; continue }   // drain to EOF, don't abandon
+            if sawDone { continue }
             guard let data = payload.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = obj["choices"] as? [[String: Any]],

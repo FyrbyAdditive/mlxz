@@ -34,13 +34,10 @@ struct ModelLibraryView: View {
                 ForEach(installed) { m in
                     HStack {
                         VStack(alignment: .leading) {
-                            HStack(spacing: 6) {
-                                Text(m.displayName).font(.body)
-                                if isLoaded(m.descriptor.repoID) { loadedBadge }
-                            }
+                            Text(m.displayName).font(.body)
                             Text(byteString(m.sizeBytes)).font(.caption).foregroundStyle(.secondary)
                         }
-                        CapabilityBadges(capabilities: m.capabilities)
+                        CapabilityBadges(capabilities: m.capabilities, loaded: isLoaded(m.descriptor.repoID))
                         Spacer()
                         loadControl(for: m.descriptor.repoID)
                     }
@@ -58,14 +55,11 @@ struct ModelLibraryView: View {
                 ForEach(results) { entry in
                     HStack {
                         VStack(alignment: .leading) {
-                            HStack(spacing: 6) {
-                                Text(entry.displayName)
-                                if isLoaded(entry.id) { loadedBadge }
-                            }
+                            Text(entry.displayName)
                             Text("↓ \(entry.downloads)  ·  \(entry.quantization ?? "—")")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        CapabilityBadges(capabilities: entry.capabilities)
+                        CapabilityBadges(capabilities: entry.capabilities, loaded: isLoaded(entry.id))
                         Spacer()
                         downloadControl(for: entry.id)
                         loadControl(for: entry.id)
@@ -87,14 +81,6 @@ struct ModelLibraryView: View {
     private func isLoading(_ repoID: String) -> Bool {
         if case .loading(let d, _) = model.modelState { return d.repoID == repoID }
         return false
-    }
-
-    private var loadedBadge: some View {
-        Text("Loaded")
-            .font(.caption2)
-            .padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Color.green.opacity(0.18), in: Capsule())
-            .foregroundStyle(.green)
     }
 
     /// Load / Loading… / Unload control reflecting the model lifecycle state.
@@ -147,11 +133,15 @@ struct ModelLibraryView: View {
 /// Small capability chips (tools / vision / MTP).
 struct CapabilityBadges: View {
     let capabilities: ModelCapabilities
+    /// When true, a "Loaded" badge is shown alongside the capability badges (same row).
+    var loaded: Bool = false
+
     var body: some View {
         HStack(spacing: 4) {
-            if capabilities.contains(.vision) { badge("vision", .purple) }
+            if loaded { badge("Loaded", .green) }
+            if capabilities.contains(.vision) { badge("Vision", .purple) }
             if capabilities.contains(.speculative) { badge("MTP", .orange) }
-            if capabilities.contains(.tools) { badge("tools", .blue) }
+            if capabilities.contains(.tools) { badge("Tools", .blue) }
         }
     }
     private func badge(_ text: String, _ color: Color) -> some View {

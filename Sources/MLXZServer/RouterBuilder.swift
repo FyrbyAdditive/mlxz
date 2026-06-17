@@ -194,6 +194,10 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
         headers: headers,
         body: ResponseBody { writer in
             let allocator = ByteBufferAllocator()
+            // Release the generation slot exactly once, no matter how this closure exits
+            // (normal finish, mid-stream error, or client-disconnect cancellation). A leaked
+            // slot would wedge the depth-1 gate and reject all subsequent requests.
+            let released = ReleaseOnce(gate: gate)
             do {
                 let stream = try await engine.generate(request)
                 for try await event in stream {
@@ -205,19 +209,31 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
                 for frame in encoder.terminator() {
                     try await writer.write(frame.byteBuffer(allocator: allocator))
                 }
-                await gate.release()
+                await released.release()
                 try await writer.finish(nil)
             } catch {
-                // Mid-stream errors: best-effort emit an SSE error frame, then finish.
+                // Mid-stream errors or client disconnect: best-effort emit an error frame, finish.
+                await released.release()
                 let api = asAPIError(error)
                 let errData = String(data: api.jsonBody(), encoding: .utf8) ?? "{}"
                 let frame = SSEFrame(event: nil, data: errData)
                 try? await writer.write(frame.byteBuffer(allocator: allocator))
-                await gate.release()
-                try await writer.finish(nil)
+                try? await writer.finish(nil)
             }
         }
     )
+}
+
+/// Releases a generation-gate slot at most once, even across error/cancellation paths.
+private actor ReleaseOnce {
+    private let gate: GenerationGate
+    private var done = false
+    init(gate: GenerationGate) { self.gate = gate }
+    func release() async {
+        guard !done else { return }
+        done = true
+        await gate.release()
+    }
 }
 
 /// Build an OpenAI-format error response.
