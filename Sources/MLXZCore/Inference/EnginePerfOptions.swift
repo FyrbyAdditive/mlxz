@@ -4,9 +4,13 @@ import Foundation
 /// These are server-level tuning (not per-request) — they trade a little quality for
 /// substantially less KV-cache memory, enabling longer contexts and larger MoE models.
 public struct EnginePerfOptions: Sendable, Equatable {
-    /// Quantize the KV cache to this many bits (e.g. 8). nil = full precision (default).
-    /// Large memory savings, but noticeably degrades small models — use only on large/MoE
-    /// models that are memory-bound. Leave nil for best quality.
+    /// Quantize the full-attention KV cache to this many bits. Default 4 (verified: greedy output
+    /// byte-identical to fp16 on the 27B, decode speed unchanged). `nil` = full precision. Only the
+    /// attention layers are quantized; the GatedDeltaNet recurrent (Mamba) state stays full precision.
+    /// Note: the absolute memory saving is small at typical context lengths (the hybrid model has few
+    /// attention layers, so the attention KV is a minor fraction) — measured negligible for the
+    /// cross-request prefix snapshots. It's lossless and free here, and provides headroom at very long
+    /// contexts / many cached slots. Small models may degrade at low bit-widths — raise to 8 or nil.
     public var kvBits: Int?
     /// Group size for KV quantization.
     public var kvGroupSize: Int
@@ -41,7 +45,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
     public var prefixCacheSlots: Int
 
     public init(
-        kvBits: Int? = nil,
+        kvBits: Int? = 4,
         kvGroupSize: Int = 64,
         quantizedKVStart: Int = 0,
         maxKVSize: Int? = nil,

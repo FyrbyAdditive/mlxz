@@ -28,8 +28,8 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Optional API key required in the Authorization: Bearer header.")
     var apiKey: String?
 
-    @Option(name: .long, help: "Quantize the KV cache to N bits (e.g. 8) to cut memory ~2-3.5x. Best on large models; degrades small models — leave off unless memory-bound.")
-    var kvBits: Int?
+    @Option(name: .long, help: "Quantize the attention KV cache (and prefix snapshots) to N bits. Default 4 (verified lossless for greedy on the 27B, ~4x smaller KV). Use 8 for small models; 0 disables (full precision).")
+    var kvBits: Int = 4
 
     @Option(name: .long, help: "Cap the KV cache to N tokens (rotating cache); bounds memory on long chats. Disables prefix-cache reuse.")
     var maxKvSize: Int?
@@ -77,7 +77,7 @@ struct MLXZServe: AsyncParsableCommand {
         }
 
         let perf = EnginePerfOptions(
-            kvBits: kvBits,
+            kvBits: kvBits > 0 ? kvBits : nil,  // 0 = full precision
             maxKVSize: maxKvSize,
             prefixCache: prefixCache,
             useMTP: mtp,
