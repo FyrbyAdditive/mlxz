@@ -134,14 +134,21 @@ GatedDeltaNet runs a single projection/conv pass per verify step (the SSM scan i
 snapshot state for rollback). MLX's GPU buffer cache is bounded at startup (`--gpu-cache-mb`,
 default 512) so it doesn't hoard scratch buffers next to a multi-GB model.
 
+**Fast prefill (fused Metal kernel).** The hybrid backbone's GatedDeltaNet (SSM) layers in the
+MLXVLM path — which the 27B VLM uses — were running the recurrence as a Swift per-timestep loop
+(one GPU dispatch per token): fine for decode, but a multi-thousand-token prompt prefilled at only
+~60 tok/s (a Copilot-sized prompt took ~77s cold). The fork now runs the whole recurrence in a
+single fused Metal kernel (the same one MLXLLM already shipped; MLXVLM was missing it). Measured on
+Qwen3.6-27B: cold big-prompt time-to-first-token **77s → ~7s (11×)**, output token-identical
+(kernel-vs-ops parity unit-tested).
+
 **Prefix-cache reuse (snapshot/restore).** A chat with a large constant system prompt (the VS Code
-Copilot case) used to re-prefill that prompt every turn — tens of seconds of latency before the
-first token. The hybrid backbone's SSM layers can't be rewound to an arbitrary prefix, so mlxz
-snapshots the cache state *during prefill* at the stable prefix (the prompt region shared with the
-previous turn) and restores it on later turns, prefilling only the new suffix. Measured: a reusing
-turn drops time-to-first-token from ~25s to ~1s (25×) on Qwen3.6-27B, with token-identical output.
-The streaming server also logs live progress (time-to-first-token, a tok/s heartbeat, a final
-summary) so a long prefill is visible rather than a black box.
+Copilot case) used to re-prefill that prompt every turn. The hybrid backbone's SSM layers can't be
+rewound to an arbitrary prefix, so mlxz snapshots the cache state *during prefill* at the stable
+prefix (the prompt region shared with the previous turn) and restores it on later turns, prefilling
+only the new suffix. Measured: a reusing turn drops time-to-first-token to ~1s on Qwen3.6-27B, with
+token-identical output. The streaming server also logs live progress (time-to-first-token, a tok/s
+heartbeat, a final summary) so a long prefill is visible rather than a black box.
 
 Possible future work: deeper drafting (block_size > 1), prefix/KV-cache reuse with MTP, multiple
 concurrent loaded models. See `.claude/plans/we-are-building-a-lovely-tiger.md`.
