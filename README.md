@@ -96,15 +96,20 @@ curl -s http://127.0.0.1:8088/v1/chat/completions -H 'Content-Type: application/
 
 ## Status
 
-**Phase 1 + 2 complete**, verified end-to-end against a real model:
+**Phases 1–4 complete**, verified end-to-end against real models:
 
-- Chat Completions and Responses APIs (both streaming + non-streaming + tool calling).
+- Chat Completions, Responses, and legacy Completions APIs (streaming + non-streaming + tool calling).
+- Embeddings (`/v1/embeddings`) via MLXEmbedders — verified 384-dim vectors from bge-small.
 - Vision input (`image_url` remote or base64 `data:` URL) → VLM image path.
 - `/v1/models`, HF catalog search, install enumeration, explicit downloads with progress.
-- GUI (model library/search/download, server control, logs) + menu bar.
+- GUI: model library/search/download, server control with live metrics (requests served, tok/s),
+  playground (dogfoods the local server), logs, menu bar.
+- Robustness: depth-1 backpressure, auto-unload on critical memory pressure, optional API key + LAN bind.
 
-Known limitation: MTP/speculative decoding is a present-but-inert seam — mlx-swift-lm 3.31.3 has
-no native single-model MTP via `ModelContainer.generate`, so speculative requests use standard
-decoding (capability is still advertised). Planned next: embeddings (`MLXEmbedders`), legacy
-`/v1/completions`, draft-model speculative decoding, prefix/KV-cache reuse. See
+Known limitation: MTP/speculative decoding is a present-but-inert seam — mlx-swift-lm 3.31.3 has no
+native single-model MTP, and its draft-model path can't host the main + draft models in one
+isolation domain (`any LanguageModel` is non-Sendable, per-model `ModelContainer` actors). So
+speculative requests use standard decoding (capability is still advertised). It becomes a one-file
+change when upstream lands MTP or a Sendable speculative entry point. Possible future work:
+prefix/KV-cache reuse across requests, multiple concurrent loaded models. See
 `.claude/plans/we-are-building-a-lovely-tiger.md`.
