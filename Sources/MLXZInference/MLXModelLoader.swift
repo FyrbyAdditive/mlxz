@@ -39,7 +39,13 @@ public struct MLXModelLoader: ModelLoading {
             progress(LoadProgress(fraction: p.fractionCompleted, detail: p.localizedDescription))
         }
 
-        var capabilities = ModelCapabilityDetector.detect(repoID: descriptor.repoID)
+        // Authoritative vision detection: VLM checkpoints load as `VLMModel` (regardless of repo
+        // name), so query the loaded model rather than guessing from the id.
+        let isVisionModel = await container.perform { context in
+            context.model is any VLMModel
+        }
+        var capabilities = ModelCapabilityDetector.detect(
+            repoID: descriptor.repoID, hasVisionConfig: isVisionModel)
 
         // Draft-model MTP: download the standalone drafter and attach it to the backbone's MTP head.
         if let draftModelID {

@@ -11,9 +11,13 @@ public struct CatalogEntry: Sendable, Identifiable, Hashable {
 
     public var displayName: String { id.split(separator: "/").last.map(String.init) ?? id }
 
-    /// Capabilities inferred from the repo id + tags.
+    /// Capabilities inferred from the repo id + tags. The HF task tag `image-text-to-text`
+    /// (or a `vision`/`multimodal` tag) marks a VLM even when the repo id has no `-vl` marker.
     public var capabilities: ModelCapabilities {
-        ModelCapabilityDetector.detect(repoID: id, modelType: tags.first { $0.contains("_") })
+        let visionTags: Set<String> = ["image-text-to-text", "image-to-text", "vision", "multimodal"]
+        let hasVisionTag = tags.contains { visionTags.contains($0.lowercased()) }
+        return ModelCapabilityDetector.detect(
+            repoID: id, modelType: tags.first { $0.contains("_") }, hasVisionConfig: hasVisionTag)
     }
 
     public var isMoE: Bool { id.localizedCaseInsensitiveContains("a3b") || tags.contains("moe") || id.lowercased().contains("moe") }

@@ -6,11 +6,20 @@ import Foundation
 /// Chat + tools are always advertised — we own tool-call parsing, so every chat model can be
 /// driven in Copilot agent mode. Vision and speculative decoding are inferred from naming.
 public enum ModelCapabilityDetector {
-    public static func detect(repoID: String, modelType: String? = nil) -> ModelCapabilities {
+    /// - Parameters:
+    ///   - repoID: the HuggingFace repo id.
+    ///   - modelType: `model_type` from config.json, if known.
+    ///   - hasVisionConfig: authoritative signal that the model is multimodal (e.g. config.json
+    ///     contains a `vision_config`, or the catalog reports an image-text-to-text task). Many
+    ///     VLM repo ids (e.g. `Qwen3.6-27B-4bit`) carry no `-vl`/`vision` marker, so naming alone
+    ///     under-detects vision; this flag is the reliable source when available.
+    public static func detect(
+        repoID: String, modelType: String? = nil, hasVisionConfig: Bool = false
+    ) -> ModelCapabilities {
         var caps: ModelCapabilities = [.chat, .tools]
         let haystack = (repoID + " " + (modelType ?? "")).lowercased()
 
-        if isVision(haystack) {
+        if hasVisionConfig || isVision(haystack) {
             caps.insert(.vision)
         }
         if isSpeculative(haystack) {

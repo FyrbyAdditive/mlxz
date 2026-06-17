@@ -40,6 +40,17 @@ import Foundation
         #expect(!plain.isMTP)
     }
 
+    @Test func imageTextToTextTagFlagsVisionWithoutNameMarker() throws {
+        // A VLM whose repo id has no -vl marker but whose HF task tag is image-text-to-text.
+        let json = #"""
+        [{"id":"mlx-community/Qwen3.6-27B-4bit","downloads":100,
+          "tags":["mlx","qwen3_5","image-text-to-text","conversational"]}]
+        """#
+        let entry = try HubCatalog.decode(Data(json.utf8))[0]
+        #expect(entry.isVision)
+        #expect(entry.capabilities.contains(.vision))
+    }
+
     @Test func searchURLUsesMLXFilter() async {
         // We can't hit the network in tests, but we can confirm the catalog is constructible.
         let catalog = HubCatalog()

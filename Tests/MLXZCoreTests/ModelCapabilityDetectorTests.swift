@@ -34,4 +34,16 @@ import Testing
         #expect(caps.contains(.chat))
         #expect(!caps.contains(.vision))
     }
+
+    @Test func visionConfigSignalDetectsVLMWithoutNameMarker() {
+        // Qwen3.6-27B-4bit is a VLM but its repo id has no -vl/vision marker; the config signal
+        // (vision_config present / image-text-to-text tag) must still surface vision.
+        let withoutSignal = ModelCapabilityDetector.detect(repoID: "mlx-community/Qwen3.6-27B-4bit")
+        #expect(!withoutSignal.contains(.vision), "name alone shouldn't flag this as vision")
+
+        let withSignal = ModelCapabilityDetector.detect(
+            repoID: "mlx-community/Qwen3.6-27B-4bit", hasVisionConfig: true)
+        #expect(withSignal.contains(.vision), "vision-config signal must flag vision")
+        #expect(withSignal.contains(.chat))
+    }
 }

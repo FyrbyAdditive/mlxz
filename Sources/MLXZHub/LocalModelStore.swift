@@ -7,12 +7,15 @@ public struct InstalledModel: Sendable, Identifiable, Hashable {
     public var directory: URL
     public var sizeBytes: Int64
     public var modelType: String?
+    /// True when config.json declares vision components (multimodal model).
+    public var hasVisionConfig: Bool = false
 
     public var id: String { descriptor.id }
     public var displayName: String { descriptor.displayName }
 
     public var capabilities: ModelCapabilities {
-        ModelCapabilityDetector.detect(repoID: descriptor.repoID, modelType: modelType)
+        ModelCapabilityDetector.detect(
+            repoID: descriptor.repoID, modelType: modelType, hasVisionConfig: hasVisionConfig)
     }
 }
 
@@ -75,24 +78,34 @@ public struct LocalModelStore: Sendable {
         for revision in revisions {
             let config = revision.appendingPathComponent("config.json")
             guard fm.fileExists(atPath: config.path) else { continue }
-            let modelType = Self.readModelType(config)
+            let info = Self.readConfig(config)
             let size = Self.directorySize(revision)
             return InstalledModel(
                 descriptor: ModelDescriptor(repoID: repoID),
                 directory: revision,
                 sizeBytes: size,
-                modelType: modelType
+                modelType: info.modelType,
+                hasVisionConfig: info.hasVision
             )
         }
         return nil
     }
 
-    /// Read `model_type` from a config.json.
-    static func readModelType(_ configURL: URL) -> String? {
+    /// Read `model_type` and a vision signal from config.json. A model is multimodal if config
+    /// declares any vision component (`vision_config`, an image token, etc.) — repo names often
+    /// omit a `-vl` marker, so this is the reliable source.
+    static func readConfig(_ configURL: URL) -> (modelType: String?, hasVision: Bool) {
         guard let data = try? Data(contentsOf: configURL),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj["model_type"] as? String
+        else { return (nil, false) }
+        let visionKeys = ["vision_config", "image_token_id", "vision_start_token_id", "vision_tower"]
+        let hasVision = visionKeys.contains { obj[$0] != nil }
+        return (obj["model_type"] as? String, hasVision)
+    }
+
+    /// Read `model_type` from a config.json.
+    static func readModelType(_ configURL: URL) -> String? {
+        readConfig(configURL).modelType
     }
 
     /// Best-effort recursive size of a directory (follows the snapshot's symlinks into blobs).

@@ -55,4 +55,24 @@ import Foundation
         // No snapshots → nil, but the name parsing is exercised by enumeratesInstalledModels.
         #expect(LocalModelStore.installedModel(at: url) == nil)
     }
+
+    @Test func readConfigDetectsVisionFromConfigJSON() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("mlxz-cfg-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        // A VLM config (vision_config present), repo name has no -vl marker.
+        let vlm = dir.appendingPathComponent("vlm.json")
+        try #"{"model_type":"qwen3_5","vision_config":{"depth":1},"image_token_id":5}"#
+            .write(to: vlm, atomically: true, encoding: .utf8)
+        let vlmInfo = LocalModelStore.readConfig(vlm)
+        #expect(vlmInfo.hasVision)
+        #expect(vlmInfo.modelType == "qwen3_5")
+
+        // A text-only config.
+        let text = dir.appendingPathComponent("text.json")
+        try #"{"model_type":"qwen3"}"#.write(to: text, atomically: true, encoding: .utf8)
+        #expect(!LocalModelStore.readConfig(text).hasVision)
+    }
 }
