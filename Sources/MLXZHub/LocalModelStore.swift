@@ -109,14 +109,26 @@ public struct LocalModelStore: Sendable {
     }
 
     /// Best-effort recursive size of a directory (follows the snapshot's symlinks into blobs).
+    /// On-disk size of a snapshot directory. HF caches store snapshot entries as symlinks into a
+    /// shared `blobs/` directory, so we resolve each symlink to its real file and sum the unique
+    /// blobs (de-duplicating blobs shared across files/revisions). The default `.fileSizeKey`
+    /// reports 0 for symlinks, which is why models showed as 0 KB.
     static func directorySize(_ url: URL) -> Int64 {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
-            return 0
-        }
+        guard
+            let enumerator = fm.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        else { return 0 }
+
         var total: Int64 = 0
+        var countedBlobs = Set<String>()
         for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            // Resolve symlinks to the real (blob) file; measure that.
+            let resolved = fileURL.resolvingSymlinksInPath()
+            let path = resolved.path
+            guard countedBlobs.insert(path).inserted else { continue }  // skip already-counted blobs
+            let values = try? resolved.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
             if values?.isRegularFile == true, let size = values?.fileSize {
                 total += Int64(size)
             }

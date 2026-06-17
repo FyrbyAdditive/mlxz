@@ -40,6 +40,36 @@ import Foundation
         #expect(mtp.sizeBytes >= 2048)
     }
 
+    @Test func directorySizeResolvesSymlinksAndDedupesBlobs() throws {
+        // Mirror the HF cache layout: snapshot entries are symlinks into a shared blobs/ dir.
+        let fm = FileManager.default
+        let model = fm.temporaryDirectory.appendingPathComponent("models--x--y-\(UUID().uuidString)")
+        let blobs = model.appendingPathComponent("blobs")
+        let snapshot = model.appendingPathComponent("snapshots/rev")
+        try fm.createDirectory(at: blobs, withIntermediateDirectories: true)
+        try fm.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: model) }
+
+        // One 5000-byte weights blob + one 100-byte config blob.
+        let weightsBlob = blobs.appendingPathComponent("aaa")
+        let configBlob = blobs.appendingPathComponent("bbb")
+        try Data(count: 5000).write(to: weightsBlob)
+        try Data(count: 100).write(to: configBlob)
+
+        // Symlink snapshot entries to the blobs (config.json + two files sharing nothing).
+        try fm.createSymbolicLink(
+            at: snapshot.appendingPathComponent("config.json"), withDestinationURL: configBlob)
+        try fm.createSymbolicLink(
+            at: snapshot.appendingPathComponent("model.safetensors"), withDestinationURL: weightsBlob)
+        // A second symlink to the SAME weights blob must not be double-counted.
+        try fm.createSymbolicLink(
+            at: snapshot.appendingPathComponent("model.safetensors.bak"),
+            withDestinationURL: weightsBlob)
+
+        let size = LocalModelStore.directorySize(snapshot)
+        #expect(size == 5100, "expected 5000 + 100 (shared blob counted once), got \(size)")
+    }
+
     @Test func ignoresDirectoriesWithoutConfig() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("mlxz-empty-\(UUID().uuidString)")

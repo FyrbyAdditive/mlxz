@@ -83,10 +83,22 @@ struct ModelLibraryView: View {
         return false
     }
 
+    /// A standalone MTP drafter (e.g. "…-MTP-4bit") holds only the speculative head and can't be
+    /// loaded as a primary model — it must be attached to a base model instead.
+    private func isDrafter(_ repoID: String) -> Bool {
+        let name = (repoID.split(separator: "/").last.map(String.init) ?? repoID).lowercased()
+        return name.contains("-mtp")
+    }
+
     /// Load / Loading… / Unload control reflecting the model lifecycle state.
     @ViewBuilder
     private func loadControl(for repoID: String) -> some View {
-        if isLoaded(repoID) {
+        if isDrafter(repoID) {
+            Text("drafter").font(.caption2)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .foregroundStyle(.secondary)
+                .help("MTP drafter — attach to a base model rather than loading directly.")
+        } else if isLoaded(repoID) {
             Button("Unload", role: .destructive) { Task { await model.unload() } }
         } else if isLoading(repoID) {
             HStack(spacing: 4) {

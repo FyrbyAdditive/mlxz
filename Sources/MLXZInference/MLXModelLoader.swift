@@ -26,6 +26,13 @@ public struct MLXModelLoader: ModelLoading {
         _ descriptor: ModelDescriptor,
         progress: @escaping @Sendable (LoadProgress) -> Void
     ) async throws -> any InferenceEngine {
+        // A standalone MTP drafter checkpoint (e.g. "…-MTP-4bit") contains only the MTP head, not a
+        // full backbone — it can't be loaded as a primary model, only attached to one via
+        // `draftModelID`. Reject it early with a clear message instead of failing deep in MLX.
+        if Self.looksLikeStandaloneDrafter(descriptor.repoID) {
+            throw MTPLoadError.drafterNotStandalone(descriptor.repoID)
+        }
+
         let configuration = ModelConfiguration(
             id: descriptor.repoID,
             revision: descriptor.revision ?? "main"
@@ -85,13 +92,25 @@ public struct MLXModelLoader: ModelLoading {
         else { return nil }
         return BaseConfiguration.Quantization(groupSize: groupSize, bits: bits)
     }
+
+    /// Heuristic: mlx-community publishes MTP *drafters* as `…-MTP-<quant>` checkpoints that hold
+    /// only the MTP head and cannot be loaded as a standalone model.
+    static func looksLikeStandaloneDrafter(_ repoID: String) -> Bool {
+        let name = (repoID.split(separator: "/").last.map(String.init) ?? repoID).lowercased()
+        return name.contains("-mtp-") || name.hasSuffix("-mtp") || name.contains("-mtp")
+    }
 }
 
 enum MTPLoadError: Error, CustomStringConvertible {
     case wrongModelType(String)
+    case drafterNotStandalone(String)
     var description: String {
         switch self {
-        case .wrongModelType(let t): "MTP drafter attach: loaded model is \(t), expected Qwen35Model"
+        case .wrongModelType(let t):
+            "MTP drafter attach: loaded model is \(t), expected Qwen35Model"
+        case .drafterNotStandalone(let id):
+            "\(id) is an MTP drafter (it contains only the speculative head, not a full model). "
+                + "Load the full base model and attach this drafter with --mtp-draft \(id)."
         }
     }
 }
