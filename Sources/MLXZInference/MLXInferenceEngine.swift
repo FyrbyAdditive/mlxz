@@ -19,17 +19,33 @@ public struct MLXInferenceEngine: InferenceEngine {
     public let capabilities: ModelCapabilities
 
     private let container: ModelContainer
+    /// Persistent prefix cache, reused across requests. Mutated only inside `container.perform`,
+    /// where the GenerationGate already serializes access.
+    private let promptCache = PromptCacheBox()
+    private let enablePrefixCache: Bool
 
-    public init(descriptor: ModelDescriptor, capabilities: ModelCapabilities, container: ModelContainer) {
+    public init(
+        descriptor: ModelDescriptor,
+        capabilities: ModelCapabilities,
+        container: ModelContainer,
+        enablePrefixCache: Bool = true
+    ) {
         self.descriptor = descriptor
         self.capabilities = capabilities
         self.container = container
+        self.enablePrefixCache = enablePrefixCache
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
         let parameters = Self.mapParameters(request.sampling, maxTokens: request.maxTokens)
         let modelID = descriptor.repoID
         let container = self.container
+        let promptCache = self.promptCache
+        // Reuse the prefix cache only for plain text requests (images complicate token alignment,
+        // and a fixed seed implies the caller wants fully deterministic, fresh decoding).
+        let usePrefixCache = enablePrefixCache
+            && !request.messages.contains { $0.hasImages }
+            && request.sampling.seed == nil
 
         // Capture only Sendable values (`request`, `container`, `parameters`). The non-Sendable
         // `UserInput`/`LMInput` are built and consumed entirely inside the task.
@@ -44,8 +60,15 @@ public struct MLXInferenceEngine: InferenceEngine {
                     let chat = request.messages.map(Self.mapMessage)
                     let tools = request.tools.map { $0.map(Self.mapTool) }
                     let userInput = UserInput(chat: chat, tools: tools)
-                    let lmInput = try await container.prepare(input: userInput)
-                    let stream = try await container.generate(input: lmInput, parameters: parameters)
+                    let stream: AsyncStream<Generation>
+                    if usePrefixCache {
+                        stream = try await Self.cachedStream(
+                            container: container, box: promptCache,
+                            userInput: userInput, parameters: parameters)
+                    } else {
+                        let lmInput = try await container.prepare(input: userInput)
+                        stream = try await container.generate(input: lmInput, parameters: parameters)
+                    }
                     for await item in stream {
                         if Task.isCancelled { break }
                         switch item {
@@ -89,5 +112,70 @@ public struct MLXInferenceEngine: InferenceEngine {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Build a generation stream that reuses a persistent KV cache for the shared prompt prefix.
+    ///
+    /// Runs inside `container.perform` because the cache, model, and iterator are non-Sendable.
+    /// Algorithm: tokenize the full prompt, find the longest common prefix with what the cache
+    /// already encodes, trim the cache back to that prefix, and feed only the new suffix tokens —
+    /// the model then attends to the cached prefix instead of re-prefilling it.
+    static func cachedStream(
+        container: ModelContainer,
+        box: PromptCacheBox,
+        userInput: consuming UserInput,
+        parameters: GenerateParameters
+    ) async throws -> AsyncStream<Generation> {
+        let boxedInput = SendableValueBox(userInput)
+        return try await container.perform { context in
+            let fullInput = try await context.processor.prepare(input: boxedInput.consume())
+            let newTokens = fullInput.text.tokens.asArray(Int32.self)
+
+            // Decide how much of the existing cache to reuse.
+            let plan: PrefixCachePlan.Decision
+            if let cache = box.cache, let first = cache.first, first.isTrimmable {
+                plan = PrefixCachePlan.plan(cachedTokens: box.tokens, newTokens: newTokens)
+            } else {
+                plan = .fresh
+            }
+
+            let kvCache: [KVCache]
+            let inputForGeneration: LMInput
+
+            if plan.reuse, let cache = box.cache {
+                // Trim the cache down to the common prefix, then feed only the suffix.
+                let liveOffset = cache.first?.offset ?? 0
+                let toTrim = liveOffset - plan.reuseCount
+                if toTrim > 0 { for c in cache { _ = c.trim(toTrim) } }
+                kvCache = cache
+                let suffix = fullInput.text[text: plan.reuseCount...]
+                inputForGeneration = LMInput(text: suffix)
+            } else {
+                kvCache = context.model.newCache(parameters: parameters)
+                inputForGeneration = fullInput
+            }
+
+            // Record what the cache will encode after this prompt is prefilled (prompt tokens).
+            // Generated tokens extend the cache further; the next request reads the live offset.
+            box.cache = kvCache
+            box.tokens = newTokens
+
+            return try MLXLMCommon.generate(
+                input: inputForGeneration,
+                cache: kvCache,
+                parameters: parameters,
+                context: context
+            )
+        }
+    }
+}
+
+/// Minimal box to move a non-Sendable value into a `@Sendable` closure exactly once.
+private final class SendableValueBox<T>: @unchecked Sendable {
+    private var value: T?
+    init(_ value: T) { self.value = value }
+    func consume() -> T {
+        defer { value = nil }
+        return value!
     }
 }
