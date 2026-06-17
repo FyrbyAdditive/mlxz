@@ -75,10 +75,12 @@ public struct MLXInferenceEngine: InferenceEngine {
                     let userInput = UserInput(chat: chat, tools: tools)
                     let stream: AsyncStream<Generation>
                     if useMTP {
-                        // Native MTP self-speculative decoding. Manages its own caches, so it
-                        // bypasses the cross-request prefix cache.
+                        // Native MTP self-speculative decoding, with whole-prefix cache reuse so a
+                        // repeated system prompt (the VS Code case) is prefilled once, not per turn.
                         stream = try await Self.mtpStream(
-                            container: container, userInput: userInput, parameters: parameters)
+                            container: container,
+                            box: usePrefixCache ? promptCache : nil,
+                            userInput: userInput, parameters: parameters)
                     } else if usePrefixCache {
                         stream = try await Self.cachedStream(
                             container: container, box: promptCache,
@@ -136,13 +138,51 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// Runs inside `container.perform` because the model/caches are non-Sendable.
     static func mtpStream(
         container: ModelContainer,
+        box: PromptCacheBox?,
         userInput: consuming UserInput,
         parameters: GenerateParameters
     ) async throws -> AsyncStream<Generation> {
         let boxedInput = SendableValueBox(userInput)
         return try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: boxedInput.consume())
-            return try mtpGenerate(input: lmInput, parameters: parameters, context: context)
+            let newTokens = lmInput.text.tokens.asArray(Int32.self)
+
+            // Snapshot-and-restore prefix cache (SSM-safe). A snapshot encodes EXACTLY a stable
+            // prefix (no generated tokens), so restoring it and prefilling only the new suffix is
+            // sound even with the hybrid backbone's non-rewindable SSM layers. The recurring stable
+            // prefix is a chat's constant system prompt; we snapshot it at the point it overlaps the
+            // previous prompt and reuse it on later turns. The MTPCacheResult is the persistent
+            // store: the SAME instance every request, so its snapshot survives across calls.
+            let store = box?.mtpResult
+
+            // 1) Restore: if a stored snapshot is a strict prefix of this prompt, reuse it.
+            var restore: (model: [KVCache], mtp: [KVCache])? = nil
+            var restoreCount = 0
+            if let store, let m = store.snapshotModelCache, let h = store.snapshotMtpCache,
+                let snapTokens = store.snapshotTokens
+            {
+                let n = MTPCacheReuse.reuseCount(snapshotTokens: snapTokens, newTokens: newTokens)
+                if n > 0 {
+                    restore = (m, h)
+                    restoreCount = n
+                }
+            }
+
+            // 2) Snapshot point: the prefix this prompt shares with the previous one (the stable
+            // region likely to recur). Capture it during this prefill for the NEXT request.
+            let snapshotAt = MTPCacheReuse.snapshotPoint(
+                previousTokens: store?.promptTokens ?? [], currentTokens: newTokens)
+
+            // Invalidate the stored snapshot up front: mtpGenerate refills `store` ONLY on clean
+            // completion, so a cancelled/errored run leaves no stale snapshot for the next request.
+            store?.snapshotModelCache = nil
+            store?.snapshotMtpCache = nil
+            store?.snapshotTokens = nil
+            store?.promptTokens = nil
+
+            return try mtpGenerate(
+                input: lmInput, parameters: parameters, context: context,
+                restore: restore, restoreCount: restoreCount, snapshotAt: snapshotAt, result: store)
         }
     }
 

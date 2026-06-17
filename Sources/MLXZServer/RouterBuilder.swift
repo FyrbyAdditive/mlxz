@@ -150,7 +150,7 @@ struct RouterBuilder {
             logSink?("→ \(E.path) (\(genRequest.messages.count) messages, stream=\(endpoint.isStreaming(wire)))")
 
             if endpoint.isStreaming(wire) {
-                return makeStreamingResponse(endpoint: endpoint, wire: wire, modelID: modelID, engine: engine, request: genRequest, gate: gate, metricsSink: metricsSink)
+                return makeStreamingResponse(endpoint: endpoint, wire: wire, modelID: modelID, engine: engine, request: genRequest, gate: gate, metricsSink: metricsSink, logSink: logSink)
             } else {
                 do {
                     let stream = try await engine.generate(genRequest)
@@ -181,7 +181,8 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
     engine: any InferenceEngine,
     request: GenerationRequest,
     gate: GenerationGate,
-    metricsSink: (@Sendable (TokenUsage) -> Void)?
+    metricsSink: (@Sendable (TokenUsage) -> Void)?,
+    logSink: (@Sendable (String) -> Void)?
 ) -> Response {
     let encoder = endpoint.makeStreamEncoder(for: wire, modelID: modelID)
     let headers: HTTPFields = [
@@ -198,10 +199,37 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
             // (normal finish, mid-stream error, or client-disconnect cancellation). A leaked
             // slot would wedge the depth-1 gate and reject all subsequent requests.
             let released = ReleaseOnce(gate: gate)
+            // Live progress so generation isn't a black box: time-to-first-token (i.e. prefill
+            // cost), a periodic tok/s heartbeat, and a final summary. Without this a long prefill
+            // looks indistinguishable from a hang.
+            let start = ContinuousClock.now
+            var firstTokenAt: ContinuousClock.Instant? = nil
+            var lastHeartbeat = start
+            var tokenCount = 0
             do {
                 let stream = try await engine.generate(request)
                 for try await event in stream {
-                    if case .completed(let result) = event { metricsSink?(result.usage) }
+                    switch event {
+                    case .completed(let result):
+                        metricsSink?(result.usage)
+                    case .textDelta:
+                        tokenCount += 1
+                        let now = ContinuousClock.now
+                        if firstTokenAt == nil {
+                            firstTokenAt = now
+                            let ttft = Double((now - start).components.seconds)
+                                + Double((now - start).components.attoseconds) / 1e18
+                            logSink?(String(format: "  prefilled, first token in %.1fs", ttft))
+                        } else if now - lastHeartbeat >= .seconds(1) {
+                            lastHeartbeat = now
+                            let dt = Double((now - firstTokenAt!).components.seconds)
+                                + Double((now - firstTokenAt!).components.attoseconds) / 1e18
+                            let tps = dt > 0 ? Double(tokenCount - 1) / dt : 0
+                            logSink?(String(format: "  … %d tokens, %.1f tok/s", tokenCount, tps))
+                        }
+                    default:
+                        break
+                    }
                     for frame in try encoder.encode(event) {
                         try await writer.write(frame.byteBuffer(allocator: allocator))
                     }
@@ -209,6 +237,10 @@ private func makeStreamingResponse<E: OpenAIEndpoint>(
                 for frame in encoder.terminator() {
                     try await writer.write(frame.byteBuffer(allocator: allocator))
                 }
+                let total = Double((ContinuousClock.now - start).components.seconds)
+                    + Double((ContinuousClock.now - start).components.attoseconds) / 1e18
+                let tps = total > 0 ? Double(tokenCount) / total : 0
+                logSink?(String(format: "✓ done: %d tokens in %.1fs (%.1f tok/s)", tokenCount, total, tps))
                 await released.release()
                 try await writer.finish(nil)
             } catch {

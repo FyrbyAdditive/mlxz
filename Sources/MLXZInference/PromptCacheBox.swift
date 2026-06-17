@@ -14,10 +14,20 @@ final class PromptCacheBox: @unchecked Sendable {
     /// The token ids currently encoded by `cache` (prompt + previously generated tokens).
     var tokens: [Int32] = []
 
+    /// For the MTP path: the persistent backbone + MTP-head caches and the exact token sequence
+    /// they encode. The same `MTPCacheResult` instance is passed to every `mtpGenerate` call, which
+    /// refills it on clean completion — enabling whole-prefix reuse across requests (the hybrid
+    /// model's SSM layers preclude mid-sequence trimming, so only whole-prefix reuse is sound).
+    let mtpResult = MTPCacheResult()
+
     /// Reset to empty (e.g. after model unload or when reuse is impossible).
     func reset() {
         cache = nil
         tokens = []
+        mtpResult.snapshotModelCache = nil
+        mtpResult.snapshotMtpCache = nil
+        mtpResult.snapshotTokens = nil
+        mtpResult.promptTokens = nil
     }
 }
 
