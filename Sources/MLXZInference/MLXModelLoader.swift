@@ -20,6 +20,10 @@ public struct MLXModelLoader: ModelLoading {
     public init(perf: EnginePerfOptions = .default, draftModelID: String? = nil) {
         self.perf = perf
         self.defaultDraftModelID = draftModelID
+        // Tune the MLX runtime once, before any model is loaded. Both composition roots (the
+        // headless server and the GUI app) build the loader at startup, so this is the natural
+        // single point; `configure` is idempotent.
+        MLXRuntime.configure(perf: perf)
     }
 
     public func load(

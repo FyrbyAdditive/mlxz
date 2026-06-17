@@ -43,6 +43,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Attach a standalone MTP drafter checkpoint (repo id) to the model for draft-model speculative decoding.")
     var mtpDraft: String?
 
+    @Option(name: .long, help: "Bound MLX's GPU buffer cache to N MB (default 512). Prevents MLX hoarding multi-GB of scratch buffers next to a large model. 0 disables the cache.")
+    var gpuCacheMb: Int = 512
+
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
@@ -68,7 +71,8 @@ struct MLXZServe: AsyncParsableCommand {
             kvBits: kvBits,
             maxKVSize: maxKvSize,
             prefixCache: prefixCache,
-            useMTP: mtp
+            useMTP: mtp,
+            gpuCacheLimitMB: gpuCacheMb
         )
         let manager = ModelManager(
             loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)

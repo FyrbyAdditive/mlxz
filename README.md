@@ -126,8 +126,13 @@ mlxz-serve --model mlx-community/Qwen3.6-27B-4bit \
 The drafter is downloaded and attached to the backbone's MTP head (sharing its embeddings/lm_head).
 Decoding drafts a token, verifies it in one backbone pass, and accepts via `min(1, p_target/p_draft)`
 rejection sampling, so output matches non-speculative decoding. Verified on Qwen3.6-27B: MTP greedy
-output is token-identical to the no-MTP baseline on short generations; ~1.12x decode speedup measured
-(higher on more predictable text). Toggle with `--mtp/--no-mtp`.
+output is token-identical to the no-MTP baseline; **~1.29x decode speedup measured** (14.4 → 18.6
+tok/s on a 120-token generation; higher on more predictable text). Toggle with `--mtp/--no-mtp`.
+
+The decode loop is async-pipelined (the draft forward overlaps detokenize/emit) and the backbone's
+GatedDeltaNet runs a single projection/conv pass per verify step (the SSM scan is split only to
+snapshot state for rollback). MLX's GPU buffer cache is bounded at startup (`--gpu-cache-mb`,
+default 512) so it doesn't hoard scratch buffers next to a multi-GB model.
 
 Possible future work: deeper drafting (block_size > 1), prefix/KV-cache reuse with MTP, multiple
 concurrent loaded models. See `.claude/plans/we-are-building-a-lovely-tiger.md`.

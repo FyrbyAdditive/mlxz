@@ -21,13 +21,21 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// Pure speedup (identical output); on by default for MTP-capable models.
     public var useMTP: Bool
 
+    /// Upper bound on MLX's GPU buffer cache, in MB. MLX defaults its cache to the (large) memory
+    /// limit, so it can hoard many GB of buffers alongside a multi-GB model — driving memory
+    /// pressure and weight eviction (a silent, catastrophic slowdown). MLX's own docs recommend a
+    /// much lower cap for memory-constrained / long-inference workloads (small caches often perform
+    /// identically). nil = leave MLX's default. Default: 512 MB.
+    public var gpuCacheLimitMB: Int?
+
     public init(
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
         quantizedKVStart: Int = 0,
         maxKVSize: Int? = nil,
         prefixCache: Bool = true,
-        useMTP: Bool = true
+        useMTP: Bool = true,
+        gpuCacheLimitMB: Int? = 512
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
@@ -35,6 +43,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.maxKVSize = maxKVSize
         self.prefixCache = prefixCache
         self.useMTP = useMTP
+        self.gpuCacheLimitMB = gpuCacheLimitMB
     }
 
     public static let `default` = EnginePerfOptions()

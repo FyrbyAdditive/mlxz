@@ -34,7 +34,10 @@ struct PlaygroundView: View {
                     .padding()
                 }
                 .onChange(of: transcript.last?.text) {
-                    if let last = transcript.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                    // Autoscroll on each streamed token WITHOUT animation: an animated scroll per
+                    // token (≈18+/sec) stacks overlapping animations and makes streaming feel
+                    // janky/slow even when generation is fast. Instant scroll stays smooth.
+                    if let last = transcript.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
 
