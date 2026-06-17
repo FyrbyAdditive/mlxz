@@ -14,7 +14,7 @@ struct ServerControlView: View {
                 LabeledContent("Server") {
                     HStack {
                         Circle().fill(model.serverRunning ? .green : .secondary).frame(width: 8, height: 8)
-                        Text(model.serverRunning ? "Running on \(model.bindLAN ? "0.0.0.0" : model.host):\(model.port)" : "Stopped")
+                        Text(model.serverRunning ? "Running on \(model.bindLAN ? "0.0.0.0" : model.host):\(String(model.port))" : "Stopped")
                             .foregroundStyle(.secondary)
                     }
                 }

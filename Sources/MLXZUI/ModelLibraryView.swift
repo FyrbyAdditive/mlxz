@@ -34,12 +34,15 @@ struct ModelLibraryView: View {
                 ForEach(installed) { m in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(m.displayName).font(.body)
+                            HStack(spacing: 6) {
+                                Text(m.displayName).font(.body)
+                                if isLoaded(m.descriptor.repoID) { loadedBadge }
+                            }
                             Text(byteString(m.sizeBytes)).font(.caption).foregroundStyle(.secondary)
                         }
                         CapabilityBadges(capabilities: m.capabilities)
                         Spacer()
-                        Button("Load") { Task { await model.load(m.descriptor) } }
+                        loadControl(for: m.descriptor.repoID)
                     }
                 }
             }
@@ -55,14 +58,17 @@ struct ModelLibraryView: View {
                 ForEach(results) { entry in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(entry.displayName)
+                            HStack(spacing: 6) {
+                                Text(entry.displayName)
+                                if isLoaded(entry.id) { loadedBadge }
+                            }
                             Text("↓ \(entry.downloads)  ·  \(entry.quantization ?? "—")")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         CapabilityBadges(capabilities: entry.capabilities)
                         Spacer()
                         downloadControl(for: entry.id)
-                        Button("Load") { Task { await model.load(ModelDescriptor(repoID: entry.id)) } }
+                        loadControl(for: entry.id)
                     }
                 }
             }
@@ -70,6 +76,40 @@ struct ModelLibraryView: View {
         .formStyle(.grouped)
         .navigationTitle("Models")
         .task { installed = model.installedModels() }
+    }
+
+    /// Whether `repoID` is the currently-loaded model.
+    private func isLoaded(_ repoID: String) -> Bool {
+        model.modelState.loadedDescriptor?.repoID == repoID
+    }
+
+    /// Whether `repoID` is currently being loaded.
+    private func isLoading(_ repoID: String) -> Bool {
+        if case .loading(let d, _) = model.modelState { return d.repoID == repoID }
+        return false
+    }
+
+    private var loadedBadge: some View {
+        Text("Loaded")
+            .font(.caption2)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(Color.green.opacity(0.18), in: Capsule())
+            .foregroundStyle(.green)
+    }
+
+    /// Load / Loading… / Unload control reflecting the model lifecycle state.
+    @ViewBuilder
+    private func loadControl(for repoID: String) -> some View {
+        if isLoaded(repoID) {
+            Button("Unload", role: .destructive) { Task { await model.unload() } }
+        } else if isLoading(repoID) {
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.small)
+                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            Button("Load") { Task { await model.load(ModelDescriptor(repoID: repoID)) } }
+        }
     }
 
     /// A Download / progress / cancel control reflecting the DownloadManager state.
