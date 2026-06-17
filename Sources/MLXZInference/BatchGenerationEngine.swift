@@ -152,9 +152,21 @@ private func runBatchStep(
     let promptArray = MLXArray(padded.flatMap { $0 }, [batch.count, maxLen])
     let cache = model.newBatchCache(leftPadding: leftPad)
 
-    // Prefill: one forward over the padded batch; first decode token per row comes from the last.
-    var logits = model.batchForward(promptArray, cache: cache)
-    var lastLogits = logits[0..., -1, 0...]
+    // Prefill in CHUNKS, not one forward. A single forward over the full padded prompt materializes
+    // an O(maxLen²) attention score tensor — at ~32k tokens that's a ~49GB buffer, which exceeds
+    // Metal's max buffer size and HARD-CRASHES the process (metal::malloc fatal error). Chunking
+    // bounds peak memory to O(chunk·maxLen) and matches the MTP path's chunked prefill.
+    let prefillChunk = 512
+    var lastLogits = MLXArray.zeros([batch.count, 1])
+    var pos = 0
+    while pos < maxLen {
+        let n = min(prefillChunk, maxLen - pos)
+        let chunk = promptArray[0..., pos ..< (pos + n)]
+        let logits = model.batchForward(chunk, cache: cache)
+        if pos + n >= maxLen { lastLogits = logits[0..., -1, 0...] }  // final chunk's last position
+        eval(cache.map { $0.state }.flatMap { $0 })  // realize per chunk; bound peak memory + graph
+        pos += n
+    }
     let maxTokens = batch.map(\.maxTokens).max() ?? 0
 
     var live = batch
@@ -196,8 +208,7 @@ private func runBatchStep(
         if live.isEmpty { break }
 
         let inputArray = MLXArray(nextInputs, [nextInputs.count, 1])
-        logits = model.batchForward(inputArray, cache: cache)
-        lastLogits = logits[0..., -1, 0...]
+        lastLogits = model.batchForward(inputArray, cache: cache)[0..., -1, 0...]
         step += 1
     }
 

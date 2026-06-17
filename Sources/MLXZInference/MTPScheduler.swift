@@ -147,10 +147,17 @@ actor MTPScheduler {
             }
             let snapshotAt = max(restoreCount, newTokens.count - 256)
 
-            // TEMP DIAGNOSTIC (prefix-reuse A/B): hit + reused/fresh tokens per request.
+            // DIAGNOSTIC (env-gated MLXZ_PREFIX_DIAG=1): per-request reuse hit/miss + WHY.
+            // `commonWithMRU` = longest shared prefix with the most-recent cached prompt. If reuse
+            // misses (reused=0) but commonWithMRU is large, the prefix IS shared but our snapshot
+            // boundary didn't capture it; if commonWithMRU is small, VS Code's prefix is varying
+            // turn-to-turn. `head` = first 12 token ids (to eyeball a changing leading field).
             if ProcessInfo.processInfo.environment["MLXZ_PREFIX_DIAG"] == "1" {
+                let mru = lru?.mostRecentTokens ?? []
+                let common = MTPCacheReuse.commonPrefixLength(mru, newTokens)
+                let head = newTokens.prefix(12).map(String.init).joined(separator: ",")
                 FileHandle.standardError.write(Data(
-                    "[PREFIX] prompt=\(newTokens.count) reused=\(restoreCount) fresh=\(newTokens.count - restoreCount)\n".utf8))
+                    "[PREFIX] prompt=\(newTokens.count) reused=\(restoreCount) fresh=\(newTokens.count - restoreCount) commonWithMRU=\(common) mruLen=\(mru.count) head=[\(head)]\n".utf8))
             }
 
             let stopTokenIds = MTPStopTokens.build(
