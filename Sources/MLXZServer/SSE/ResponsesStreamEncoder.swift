@@ -20,14 +20,23 @@ final class ResponsesStreamEncoder: SSEEventEncoder, @unchecked Sendable {
     private var sequence = 0
     private var openedTextItem = false
     private var accumulatedText = ""
-    private var emittedItems = 0       // output_index counter across message + function items
+    private var emittedItems = 0       // output_index counter across reasoning + message + function items
     private var finishReason: FinishReason = .stop
     private var usage: TokenUsage = .init()
     private var toolCalls: [ToolCall] = []
 
+    // Reasoning (chain-of-thought) is emitted as a separate `reasoning` output item so clients
+    // render it as "thinking", distinct from the answer. It precedes the message item.
+    private let reasoningID: String
+    private var openedReasoningItem = false
+    private var closedReasoningItem = false
+    private var accumulatedReasoning = ""
+    private var reasoningOutputIndex = 0
+
     init(modelID: String) {
         self.responseID = "resp_\(OpenAIID.random())"
         self.itemID = "msg_\(OpenAIID.random())"
+        self.reasoningID = "rs_\(OpenAIID.random())"
         self.modelID = modelID
         self.created = OpenAIID.timestamp()
     }
@@ -37,8 +46,39 @@ final class ResponsesStreamEncoder: SSEEventEncoder, @unchecked Sendable {
         case .started:
             return [frame("response.created", responseObject(status: "in_progress", includeOutput: false))]
 
-        case .textDelta(let text):
+        case .reasoningDelta(let text):
             var frames: [SSEFrame] = []
+            if !openedReasoningItem {
+                openedReasoningItem = true
+                reasoningOutputIndex = emittedItems
+                frames.append(frame("response.output_item.added", .object([
+                    ("type", .string("response.output_item.added")),
+                    ("sequence_number", .int(nextSeq())),
+                    ("output_index", .int(reasoningOutputIndex)),
+                    ("item", reasoningItem(status: "in_progress", withSummary: false)),
+                ])))
+                frames.append(frame("response.reasoning_summary_part.added", .object([
+                    ("type", .string("response.reasoning_summary_part.added")),
+                    ("sequence_number", .int(nextSeq())),
+                    ("item_id", .string(reasoningID)),
+                    ("output_index", .int(reasoningOutputIndex)),
+                    ("summary_index", .int(0)),
+                    ("part", .object([("type", .string("summary_text")), ("text", .string(""))])),
+                ])))
+            }
+            accumulatedReasoning += text
+            frames.append(frame("response.reasoning_summary_text.delta", .object([
+                ("type", .string("response.reasoning_summary_text.delta")),
+                ("sequence_number", .int(nextSeq())),
+                ("item_id", .string(reasoningID)),
+                ("output_index", .int(reasoningOutputIndex)),
+                ("summary_index", .int(0)),
+                ("delta", .string(text)),
+            ])))
+            return frames
+
+        case .textDelta(let text):
+            var frames = closeReasoningItemIfOpen()
             if !openedTextItem {
                 openedTextItem = true
                 frames.append(frame("response.output_item.added", .object([
@@ -82,8 +122,57 @@ final class ResponsesStreamEncoder: SSEEventEncoder, @unchecked Sendable {
 
     // MARK: - Closing sequence
 
-    private func closeFrames() -> [SSEFrame] {
+    /// Close the reasoning output item (summary text done → part done → item done) the first time
+    /// non-reasoning output begins, or at completion. Advances `emittedItems` so subsequent items
+    /// get the next output_index.
+    private func closeReasoningItemIfOpen() -> [SSEFrame] {
+        guard openedReasoningItem, !closedReasoningItem else { return [] }
+        closedReasoningItem = true
         var frames: [SSEFrame] = []
+        frames.append(frame("response.reasoning_summary_text.done", .object([
+            ("type", .string("response.reasoning_summary_text.done")),
+            ("sequence_number", .int(nextSeq())),
+            ("item_id", .string(reasoningID)),
+            ("output_index", .int(reasoningOutputIndex)),
+            ("summary_index", .int(0)),
+            ("text", .string(accumulatedReasoning)),
+        ])))
+        frames.append(frame("response.reasoning_summary_part.done", .object([
+            ("type", .string("response.reasoning_summary_part.done")),
+            ("sequence_number", .int(nextSeq())),
+            ("item_id", .string(reasoningID)),
+            ("output_index", .int(reasoningOutputIndex)),
+            ("summary_index", .int(0)),
+            ("part", .object([("type", .string("summary_text")), ("text", .string(accumulatedReasoning))])),
+        ])))
+        frames.append(frame("response.output_item.done", .object([
+            ("type", .string("response.output_item.done")),
+            ("sequence_number", .int(nextSeq())),
+            ("output_index", .int(reasoningOutputIndex)),
+            ("item", reasoningItem(status: "completed", withSummary: true)),
+        ])))
+        emittedItems += 1
+        return frames
+    }
+
+    private func reasoningItem(status: String, withSummary: Bool) -> OAIJSON {
+        var fields: [(String, OAIJSON)] = [
+            ("id", .string(reasoningID)),
+            ("type", .string("reasoning")),
+            ("status", .string(status)),
+        ]
+        fields.append((
+            "summary",
+            withSummary
+                ? .array([.object([
+                    ("type", .string("summary_text")), ("text", .string(accumulatedReasoning)),
+                ])])
+                : .array([])))
+        return .object(fields)
+    }
+
+    private func closeFrames() -> [SSEFrame] {
+        var frames = closeReasoningItemIfOpen()
 
         if openedTextItem {
             frames.append(frame("response.output_text.done", .object([
@@ -158,7 +247,8 @@ final class ResponsesStreamEncoder: SSEEventEncoder, @unchecked Sendable {
         ]
         if includeOutput {
             responseFields.append(("output", .array(ResponsesPayload.outputItems(
-                text: accumulatedText, hasText: openedTextItem, itemID: itemID, toolCalls: toolCalls))))
+                text: accumulatedText, hasText: openedTextItem, itemID: itemID,
+                reasoning: accumulatedReasoning, reasoningID: reasoningID, toolCalls: toolCalls))))
             responseFields.append(("usage", .object([
                 ("input_tokens", .int(usage.promptTokens)),
                 ("output_tokens", .int(usage.completionTokens)),
@@ -215,8 +305,22 @@ final class ResponsesStreamEncoder: SSEEventEncoder, @unchecked Sendable {
 
 /// Shared helpers for building the Responses `output` array (used by streaming + non-streaming).
 enum ResponsesPayload {
-    static func outputItems(text: String, hasText: Bool, itemID: String, toolCalls: [ToolCall]) -> [OAIJSON] {
+    static func outputItems(
+        text: String, hasText: Bool, itemID: String,
+        reasoning: String = "", reasoningID: String = "", toolCalls: [ToolCall]
+    ) -> [OAIJSON] {
         var items: [OAIJSON] = []
+        if !reasoning.isEmpty {
+            items.append(.object([
+                ("type", .string("reasoning")),
+                ("id", .string(reasoningID)),
+                ("status", .string("completed")),
+                ("summary", .array([.object([
+                    ("type", .string("summary_text")),
+                    ("text", .string(reasoning)),
+                ])])),
+            ]))
+        }
         if hasText {
             items.append(.object([
                 ("type", .string("message")),

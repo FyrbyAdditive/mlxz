@@ -4,6 +4,7 @@ import MLXZCore
 /// The fully-collected output of a generation, used to build a non-streaming response.
 struct AggregatedResult: Sendable {
     var text: String = ""
+    var reasoning: String = ""
     var toolCalls: [ToolCall] = []
     var finishReason: FinishReason = .stop
     var usage: TokenUsage = .init()
@@ -15,6 +16,8 @@ struct AggregatedResult: Sendable {
             switch event {
             case .started:
                 break
+            case .reasoningDelta(let t):
+                result.reasoning += t
             case .textDelta(let t):
                 result.text += t
             case .toolCall(let c):

@@ -21,6 +21,17 @@ final class ChatCompletionStreamEncoder: SSEEventEncoder, @unchecked Sendable {
         case .started:
             return []
 
+        case .reasoningDelta(let text):
+            // Surface chain-of-thought on the `reasoning_content` delta field (the de-facto
+            // standard reasoning channel for OpenAI-compatible clients), kept out of `content`.
+            var delta: [(String, OAIJSON)] = []
+            if !sentRole {
+                delta.append(("role", .string("assistant")))
+                sentRole = true
+            }
+            delta.append(("reasoning_content", .string(text)))
+            return [chunkFrame(delta: .object(delta), finishReason: nil)]
+
         case .textDelta(let text):
             var delta: [(String, OAIJSON)] = []
             if !sentRole {

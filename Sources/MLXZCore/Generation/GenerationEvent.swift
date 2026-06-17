@@ -47,6 +47,10 @@ public struct GenerationResult: Sendable {
 public enum GenerationEvent: Sendable {
     case started(GenerationStart)
     case textDelta(String)
+    /// A chunk of the model's chain-of-thought (`<think>…</think>`). Surfaced on its own channel so
+    /// clients (e.g. VS Code) can render it as separate "thinking" rather than mixing it into the
+    /// answer — and so it never leaks into the visible `content`.
+    case reasoningDelta(String)
     case toolCall(ToolCall)
     case completed(GenerationResult)
 }

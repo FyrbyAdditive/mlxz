@@ -72,6 +72,9 @@ struct ChatCompletionsEndpoint: OpenAIEndpoint {
         var message: [(String, OAIJSON)] = [("role", .string("assistant"))]
         let content: OAIJSON = (result.text.isEmpty && !result.toolCalls.isEmpty) ? .null : .string(result.text)
         message.append(("content", content))
+        if !result.reasoning.isEmpty {
+            message.append(("reasoning_content", .string(result.reasoning)))
+        }
         if !result.toolCalls.isEmpty {
             let calls: [OAIJSON] = result.toolCalls.enumerated().map { idx, call in
                 .object([

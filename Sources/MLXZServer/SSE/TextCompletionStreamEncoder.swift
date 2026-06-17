@@ -16,8 +16,8 @@ final class TextCompletionStreamEncoder: SSEEventEncoder, @unchecked Sendable {
 
     func encode(_ event: GenerationEvent) throws -> [SSEFrame] {
         switch event {
-        case .started, .toolCall:
-            return []  // legacy completions has no tool calls
+        case .started, .toolCall, .reasoningDelta:
+            return []  // legacy completions has no tool calls or separate reasoning channel
         case .textDelta(let text):
             return [chunk(text: text, finishReason: nil)]
         case .completed(let result):

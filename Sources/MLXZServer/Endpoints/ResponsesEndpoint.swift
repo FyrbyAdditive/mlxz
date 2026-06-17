@@ -75,7 +75,9 @@ struct ResponsesEndpoint: OpenAIEndpoint {
         let hasText = !result.text.isEmpty
 
         let output = ResponsesPayload.outputItems(
-            text: result.text, hasText: hasText, itemID: itemID, toolCalls: result.toolCalls)
+            text: result.text, hasText: hasText, itemID: itemID,
+            reasoning: result.reasoning, reasoningID: "rs_\(OpenAIID.random())",
+            toolCalls: result.toolCalls)
 
         let body: OAIJSON = .object([
             ("id", .string(responseID)),
