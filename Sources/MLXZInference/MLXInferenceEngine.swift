@@ -22,28 +22,29 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// Persistent prefix cache, reused across requests. Mutated only inside `container.perform`,
     /// where the GenerationGate already serializes access.
     private let promptCache = PromptCacheBox()
-    private let enablePrefixCache: Bool
+    private let perf: EnginePerfOptions
 
     public init(
         descriptor: ModelDescriptor,
         capabilities: ModelCapabilities,
         container: ModelContainer,
-        enablePrefixCache: Bool = true
+        perf: EnginePerfOptions = .default
     ) {
         self.descriptor = descriptor
         self.capabilities = capabilities
         self.container = container
-        self.enablePrefixCache = enablePrefixCache
+        self.perf = perf
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
-        let parameters = Self.mapParameters(request.sampling, maxTokens: request.maxTokens)
+        let parameters = Self.mapParameters(request.sampling, maxTokens: request.maxTokens, perf: perf)
         let modelID = descriptor.repoID
         let container = self.container
         let promptCache = self.promptCache
         // Reuse the prefix cache only for plain text requests (images complicate token alignment,
         // and a fixed seed implies the caller wants fully deterministic, fresh decoding).
-        let usePrefixCache = enablePrefixCache
+        // A bounded (rotating) or non-trimmable cache disables reuse via canTrimPromptCache.
+        let usePrefixCache = perf.prefixCache
             && !request.messages.contains { $0.hasImages }
             && request.sampling.seed == nil
 
@@ -133,7 +134,7 @@ public struct MLXInferenceEngine: InferenceEngine {
 
             // Decide how much of the existing cache to reuse.
             let plan: PrefixCachePlan.Decision
-            if let cache = box.cache, let first = cache.first, first.isTrimmable {
+            if let cache = box.cache, canTrimPromptCache(cache) {
                 plan = PrefixCachePlan.plan(cachedTokens: box.tokens, newTokens: newTokens)
             } else {
                 plan = .fresh
@@ -146,7 +147,7 @@ public struct MLXInferenceEngine: InferenceEngine {
                 // Trim the cache down to the common prefix, then feed only the suffix.
                 let liveOffset = cache.first?.offset ?? 0
                 let toTrim = liveOffset - plan.reuseCount
-                if toTrim > 0 { for c in cache { _ = c.trim(toTrim) } }
+                if toTrim > 0 { trimPromptCache(cache, numTokens: toTrim) }
                 kvCache = cache
                 let suffix = fullInput.text[text: plan.reuseCount...]
                 inputForGeneration = LMInput(text: suffix)

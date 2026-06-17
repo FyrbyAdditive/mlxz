@@ -13,7 +13,11 @@ import Tokenizers
 /// `loadModelContainer` auto-dispatches between text and vision models — Qwen dense, Qwen
 /// MoE (Qwen3.6-35B-A3B), and VLMs all load through this one path.
 public struct MLXModelLoader: ModelLoading {
-    public init() {}
+    private let perf: EnginePerfOptions
+
+    public init(perf: EnginePerfOptions = .default) {
+        self.perf = perf
+    }
 
     public func load(
         _ descriptor: ModelDescriptor,
@@ -35,7 +39,8 @@ public struct MLXModelLoader: ModelLoading {
         return MLXInferenceEngine(
             descriptor: descriptor,
             capabilities: ModelCapabilityDetector.detect(repoID: descriptor.repoID),
-            container: container
+            container: container,
+            perf: perf
         )
     }
 }

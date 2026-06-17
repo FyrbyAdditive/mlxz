@@ -105,6 +105,9 @@ curl -s http://127.0.0.1:8088/v1/chat/completions -H 'Content-Type: application/
 - GUI: model library/search/download, server control with live metrics (requests served, tok/s),
   playground (dogfoods the local server), logs, menu bar.
 - Robustness: depth-1 backpressure, auto-unload on critical memory pressure, optional API key + LAN bind.
+- Performance: **prefix KV-cache reuse** across requests (verified ~2x faster time-to-first-token when
+  requests share a long system prompt) + optional KV-cache quantization / max-KV-size for
+  memory-bound large/MoE models (`--kv-bits`, `--max-kv-size`).
 
 Known limitation: MTP/speculative decoding is a present-but-inert seam — mlx-swift-lm 3.31.3 has no
 native single-model MTP, and its draft-model path can't host the main + draft models in one

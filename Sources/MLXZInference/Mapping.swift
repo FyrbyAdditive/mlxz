@@ -47,10 +47,18 @@ extension MLXInferenceEngine {
         return ["type": "function", "function": function]
     }
 
-    /// Map our `SamplingParameters` onto the package's `GenerateParameters`.
-    static func mapParameters(_ sampling: SamplingParameters, maxTokens: Int?) -> GenerateParameters {
+    /// Map our `SamplingParameters` onto the package's `GenerateParameters`, applying perf options.
+    static func mapParameters(
+        _ sampling: SamplingParameters,
+        maxTokens: Int?,
+        perf: EnginePerfOptions = .default
+    ) -> GenerateParameters {
         var params = GenerateParameters(
             maxTokens: maxTokens,
+            maxKVSize: perf.maxKVSize,
+            kvBits: perf.kvBits,
+            kvGroupSize: perf.kvGroupSize,
+            quantizedKVStart: perf.quantizedKVStart,
             temperature: sampling.temperature,
             topP: sampling.topP
         )

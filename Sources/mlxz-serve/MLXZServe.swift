@@ -28,6 +28,15 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Optional API key required in the Authorization: Bearer header.")
     var apiKey: String?
 
+    @Option(name: .long, help: "Quantize the KV cache to N bits (e.g. 8) to cut memory ~2-3.5x. Best on large models; degrades small models — leave off unless memory-bound.")
+    var kvBits: Int?
+
+    @Option(name: .long, help: "Cap the KV cache to N tokens (rotating cache); bounds memory on long chats. Disables prefix-cache reuse.")
+    var maxKvSize: Int?
+
+    @Flag(name: .long, inversion: .prefixedNo, help: "Reuse the KV cache for shared prompt prefixes across requests.")
+    var prefixCache: Bool = true
+
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
@@ -49,7 +58,12 @@ struct MLXZServe: AsyncParsableCommand {
             return
         }
 
-        let manager = ModelManager(loader: MLXModelLoader(), logger: logger)
+        let perf = EnginePerfOptions(
+            kvBits: kvBits,
+            maxKVSize: maxKvSize,
+            prefixCache: prefixCache
+        )
+        let manager = ModelManager(loader: MLXModelLoader(perf: perf), logger: logger)
 
         logger.info("loading model (first run downloads from HuggingFace)…", metadata: ["model": .string(model)])
         try await manager.load(descriptor)
