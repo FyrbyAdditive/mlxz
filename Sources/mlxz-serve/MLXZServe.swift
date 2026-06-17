@@ -55,8 +55,11 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Prefix-snapshot cache slots (LRU) for cross-request reuse on the MTP path. Holds block-boundary snapshots so conversations sharing a system prompt reuse it. Each snapshot is small (~4.5MB at 10k tok, 4-bit KV). Default 16; 0 disables reuse.")
     var prefixCacheSlots: Int = 16
 
-    @Option(name: .long, help: "Token granularity for prefix-snapshot capture (block-aligned). Smaller = more cross-conversation reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less RAM. Default 512.")
+    @Option(name: .long, help: "Token granularity for prefix-snapshot capture (block-aligned). Smaller = the single snapshot lands closer to the shared-prefix boundary (more reuse); larger = coarser. Default 512.")
     var snapshotBlock: Int = 512
+
+    @Option(name: .long, help: "Hard ceiling (MB) on total RAM pinned by the prefix-snapshot LRU. Evicts least-recently-used snapshots to stay under this, bounding memory regardless of context length. Default 2048; 0 = no byte cap.")
+    var prefixCacheMb: Int = 2048
 
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
@@ -87,6 +90,7 @@ struct MLXZServe: AsyncParsableCommand {
             gpuCacheLimitMB: gpuCacheMb,
             maxBatch: maxBatch,
             prefixCacheSlots: prefixCacheSlots,
+            prefixCacheBytesMB: prefixCacheMb,
             snapshotBlock: snapshotBlock
         )
         let manager = ModelManager(

@@ -19,6 +19,10 @@ public final class PerfSettings: @unchecked Sendable {
     public var snapshotBlock: Int {
         didSet { defaults.set(snapshotBlock, forKey: Keys.snapshotBlock) }
     }
+    /// Hard RAM ceiling (MB) for the prefix-snapshot LRU.
+    public var prefixCacheBytesMB: Int {
+        didSet { defaults.set(prefixCacheBytesMB, forKey: Keys.prefixCacheBytesMB) }
+    }
 
     private let defaults: UserDefaults
 
@@ -26,6 +30,7 @@ public final class PerfSettings: @unchecked Sendable {
         static let kvBits = "perf.kvBits"
         static let prefixCacheSlots = "perf.prefixCacheSlots"
         static let snapshotBlock = "perf.snapshotBlock"
+        static let prefixCacheBytesMB = "perf.prefixCacheBytesMB"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -37,6 +42,8 @@ public final class PerfSettings: @unchecked Sendable {
             (defaults.object(forKey: Keys.prefixCacheSlots) as? Int) ?? d.prefixCacheSlots
         self.snapshotBlock =
             (defaults.object(forKey: Keys.snapshotBlock) as? Int) ?? d.snapshotBlock
+        self.prefixCacheBytesMB =
+            (defaults.object(forKey: Keys.prefixCacheBytesMB) as? Int) ?? d.prefixCacheBytesMB
     }
 
     /// Build `EnginePerfOptions` from the current settings, preserving all other engine defaults.
@@ -44,6 +51,7 @@ public final class PerfSettings: @unchecked Sendable {
         EnginePerfOptions(
             kvBits: kvBits > 0 ? kvBits : nil,
             prefixCacheSlots: prefixCacheSlots,
+            prefixCacheBytesMB: prefixCacheBytesMB,
             snapshotBlock: snapshotBlock)
     }
 }

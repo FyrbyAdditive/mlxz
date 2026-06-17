@@ -37,6 +37,12 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// serialized/rejected. 1 effectively serializes. Default 8.
     public var maxBatch: Int
 
+    /// Hard ceiling, in MB, on total memory pinned by the prefix-snapshot LRU. A long-context
+    /// snapshot can be hundreds of MB–GB, so the LRU evicts least-recently-used snapshots to keep the
+    /// sum under this — bounding RAM REGARDLESS of context length or number of conversations. Default
+    /// 2048 (2GB). 0 = no byte cap (count cap only — not recommended for long contexts).
+    public var prefixCacheBytesMB: Int
+
     /// Token granularity at which prefix snapshots are captured during prefill (block-aligned). A
     /// future request sharing a prefix reuses the largest block boundary ≤ the shared length, so
     /// smaller = more reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less
@@ -62,6 +68,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         gpuCacheLimitMB: Int? = 512,
         maxBatch: Int = 8,
         prefixCacheSlots: Int = 16,
+        prefixCacheBytesMB: Int = 2048,
         snapshotBlock: Int = 512
     ) {
         self.kvBits = kvBits
@@ -73,6 +80,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.gpuCacheLimitMB = gpuCacheLimitMB
         self.maxBatch = maxBatch
         self.prefixCacheSlots = prefixCacheSlots
+        self.prefixCacheBytesMB = prefixCacheBytesMB
         self.snapshotBlock = snapshotBlock
     }
 

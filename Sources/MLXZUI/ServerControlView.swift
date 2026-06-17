@@ -40,6 +40,9 @@ struct ServerControlView: View {
                 Stepper(
                     "Prefix cache slots: \(model.perfSettings.prefixCacheSlots)",
                     value: perf.prefixCacheSlots, in: 0...64)
+                Stepper(
+                    "Prefix cache RAM cap: \(model.perfSettings.prefixCacheBytesMB) MB",
+                    value: perf.prefixCacheBytesMB, in: 0...16384, step: 512)
                 Picker("Snapshot block", selection: perf.snapshotBlock) {
                     Text("256 (more reuse)").tag(256)
                     Text("512").tag(512)

@@ -53,7 +53,8 @@ public struct MLXInferenceEngine: InferenceEngine {
         self.perf = perf
         self.isBatchable = isBatchable
         self.promptCache = PromptCacheBox(
-            prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0)
+            prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0,
+            prefixCacheBytesMB: perf.prefixCacheBytesMB)
         self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
         self.mtpScheduler = MTPScheduler(
             container: container, snapshotBlock: perf.prefixCache ? perf.snapshotBlock : 512)

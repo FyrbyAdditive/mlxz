@@ -163,6 +163,7 @@ actor MTPScheduler {
                 model: model, context: context, parameters: p.parameters,
                 promptTokens: promptTokens, modelCache: restoreModel, mtpCache: restoreMtp,
                 skipPrefill: restoreCount, snapshotAt: snapshotAt, snapshotBlock: snapshotBlock,
+                referenceTokens: lru?.mostRecentTokens ?? [],
                 stopTokenIds: stopTokenIds, continuation: p.continuation, result: MTPCacheResult())
             sessions.append(Active(session: session, id: p.id, lru: lru))
         }

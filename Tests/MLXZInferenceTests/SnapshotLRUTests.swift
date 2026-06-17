@@ -1,3 +1,5 @@
+import MLX
+import MLXLMCommon
 import Testing
 
 @testable import MLXZInference
@@ -10,7 +12,7 @@ import Testing
     private func sysPrefix(_ tail: [Int32] = []) -> [Int32] { Array(0 ..< 40).map(Int32.init) + tail }
 
     @Test func bestMatchReturnsLongestExactPrefix() {
-        let lru = SnapshotLRU(capacity: 4)
+        let lru = SnapshotLRU(capacity: 4, maxBytes: 0)
         lru.insert(tokens: sysPrefix(), modelCache: [], mtpCache: [])
         // A new prompt that extends the system prefix → reuse the whole 40-token snapshot.
         let newTokens = sysPrefix([99, 98, 97])
@@ -20,7 +22,7 @@ import Testing
     }
 
     @Test func noMatchForUnrelatedPrompt() {
-        let lru = SnapshotLRU(capacity: 4)
+        let lru = SnapshotLRU(capacity: 4, maxBytes: 0)
         lru.insert(tokens: sysPrefix(), modelCache: [], mtpCache: [])
         // A short unrelated prompt shares no ≥16 prefix.
         #expect(lru.bestMatch(for: [500, 501, 502]) == nil)
@@ -29,7 +31,7 @@ import Testing
     @Test func unrelatedInsertDoesNotEvictValuableSnapshot() {
         // THE regression test: cache the system prompt, then a title-gen prompt, then a follow-up
         // that extends the system prompt — it must still find the system-prompt snapshot.
-        let lru = SnapshotLRU(capacity: 4)
+        let lru = SnapshotLRU(capacity: 4, maxBytes: 0)
         lru.insert(tokens: sysPrefix(), modelCache: [], mtpCache: [])
         lru.insert(tokens: [700, 701, 702, 703], modelCache: [], mtpCache: [])  // title-gen
         let follow = sysPrefix([1, 2])
@@ -38,7 +40,7 @@ import Testing
     }
 
     @Test func capacityEvictsLeastRecentlyUsed() {
-        let lru = SnapshotLRU(capacity: 2)
+        let lru = SnapshotLRU(capacity: 2, maxBytes: 0)
         let a = Array(0 ..< 20).map(Int32.init)
         let b = Array(100 ..< 120).map(Int32.init)
         let c = Array(200 ..< 220).map(Int32.init)
@@ -51,7 +53,7 @@ import Testing
     }
 
     @Test func bestMatchTouchesMRUSoItSurvivesEviction() {
-        let lru = SnapshotLRU(capacity: 2)
+        let lru = SnapshotLRU(capacity: 2, maxBytes: 0)
         let a = Array(0 ..< 20).map(Int32.init)
         let b = Array(100 ..< 120).map(Int32.init)
         lru.insert(tokens: a, modelCache: [], mtpCache: [])
@@ -64,9 +66,31 @@ import Testing
     }
 
     @Test func capacityZeroDisablesCaching() {
-        let lru = SnapshotLRU(capacity: 0)
+        let lru = SnapshotLRU(capacity: 0, maxBytes: 0)
         lru.insert(tokens: sysPrefix(), modelCache: [], mtpCache: [])
         #expect(lru.isEmpty)
         #expect(lru.bestMatch(for: sysPrefix([1])) == nil)
+    }
+
+    /// THE RAM-leak fix: the byte budget must evict LRU snapshots so total bytes stays bounded,
+    /// regardless of the (generous) count cap. Each snapshot here carries ~1MB of real KV.
+    @Test func byteBudgetEvictsToStayUnderCap() {
+        func megabyteCache() -> [KVCache] {
+            let c = KVCacheSimple()
+            let k = MLXArray.zeros([1, 4, 1024, 64])  // ~1MB fp32
+            let v = MLXArray.zeros([1, 4, 1024, 64])
+            _ = c.update(keys: k, values: v)
+            eval(c.state)
+            return [c]
+        }
+        // Count cap generous (10), byte cap ~2.5MB → only ~2 of these ~1MB snapshots fit.
+        let lru = SnapshotLRU(capacity: 10, maxBytes: 2_500_000)
+        for i in 0 ..< 5 {
+            let toks = Array(Int32(i * 100) ..< Int32(i * 100 + 40))
+            lru.insert(tokens: toks, modelCache: megabyteCache(), mtpCache: [])
+        }
+        #expect(lru.totalBytes <= 2_500_000, "byte budget exceeded: \(lru.totalBytes)")
+        #expect(lru.count < 5, "byte cap should have evicted some (kept \(lru.count))")
+        #expect(lru.count >= 1, "must keep at least the MRU entry")
     }
 }

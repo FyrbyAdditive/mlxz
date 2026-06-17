@@ -14,19 +14,27 @@ import MLXLMCommon
 /// happens inside the owning `ModelContainer.perform`, and the gate runs the MTP path at
 /// `maxConcurrency == 1`, so there is never concurrent access.
 final class SnapshotLRU: @unchecked Sendable {
-    /// One cached prefix snapshot: the caches plus the exact token prefix they encode.
+    /// One cached prefix snapshot: the caches plus the exact token prefix they encode, and its
+    /// measured byte size (sum of cache state-array bytes) so the LRU can bound total memory.
     struct Entry {
         let tokens: [Int32]
         let modelCache: [KVCache]
         let mtpCache: [KVCache]
+        let bytes: Int
     }
 
-    /// Front = most-recently-used. Capacity 0 disables caching entirely.
+    /// Front = most-recently-used.
     private var entries: [Entry] = []
+    /// Max number of snapshots (a coarse guard). 0 disables caching entirely.
     private let capacity: Int
+    /// Hard ceiling on total bytes pinned by all snapshots. Eviction (LRU) keeps the sum ≤ this so
+    /// RAM is bounded REGARDLESS of context length — a single 55k-token snapshot can be ~0.5–1.8GB,
+    /// so without a byte cap a few of them blow memory to tens of GB. 0 disables the byte cap.
+    private let maxBytes: Int
 
-    init(capacity: Int) {
+    init(capacity: Int, maxBytes: Int) {
         self.capacity = max(0, capacity)
+        self.maxBytes = max(0, maxBytes)
     }
 
     var isEmpty: Bool { entries.isEmpty }
@@ -34,8 +42,18 @@ final class SnapshotLRU: @unchecked Sendable {
     /// Number of cached snapshots.
     var count: Int { entries.count }
 
+    /// Total bytes currently pinned by all snapshots.
+    var totalBytes: Int { entries.reduce(0) { $0 + $1.bytes } }
+
     /// Drop all cached snapshots (e.g. on model unload).
     func clear() { entries.removeAll() }
+
+    /// Sum of the `state` array bytes across a snapshot's model + MTP caches.
+    static func snapshotBytes(model: [KVCache], mtp: [KVCache]) -> Int {
+        (model + mtp).reduce(0) { acc, kv in
+            acc + kv.state.reduce(0) { $0 + $1.nbytes }
+        }
+    }
 
     /// The longest cached snapshot that is an exact prefix of `newTokens` (≥ `minReuse` tokens and
     /// strictly shorter than `newTokens`, matching `MTPCacheReuse.reuseCount`). Moves the chosen
@@ -58,16 +76,21 @@ final class SnapshotLRU: @unchecked Sendable {
         return entry
     }
 
-    /// Insert a new snapshot at the front, replacing any existing entry that encodes the same prefix
-    /// (so re-running an identical prefix refreshes rather than duplicates), then evict LRU over
-    /// capacity. Additive: inserting a short unrelated prefix never removes a still-cached larger one
-    /// unless capacity forces it.
+    /// Insert a new snapshot at the front, replacing any existing entry with the same prefix, then
+    /// evict least-recently-used entries until BOTH the count cap and the byte budget hold. The byte
+    /// budget is the hard memory ceiling: a long-context snapshot can be ~GB, so eviction by bytes
+    /// (not just count) keeps total RAM bounded regardless of prompt length.
     func insert(tokens: [Int32], modelCache: [KVCache], mtpCache: [KVCache]) {
         guard capacity > 0 else { return }
+        let bytes = Self.snapshotBytes(model: modelCache, mtp: mtpCache)
         entries.removeAll { $0.tokens == tokens }
-        entries.insert(Entry(tokens: tokens, modelCache: modelCache, mtpCache: mtpCache), at: 0)
-        if entries.count > capacity {
-            entries.removeLast(entries.count - capacity)
+        entries.insert(
+            Entry(tokens: tokens, modelCache: modelCache, mtpCache: mtpCache, bytes: bytes), at: 0)
+        // Evict LRU (from the back) until under the count cap AND the byte budget. Always keep at
+        // least the just-inserted MRU entry (index 0), even if it alone exceeds the budget.
+        while entries.count > capacity { entries.removeLast() }
+        if maxBytes > 0 {
+            while entries.count > 1, totalBytes > maxBytes { entries.removeLast() }
         }
     }
 

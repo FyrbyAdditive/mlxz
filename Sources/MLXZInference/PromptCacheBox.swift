@@ -23,8 +23,9 @@ final class PromptCacheBox: @unchecked Sendable {
     /// trimming, so only whole-prefix reuse is sound.) Built with the configured capacity.
     let snapshotLRU: SnapshotLRU
 
-    init(prefixCacheSlots: Int = 4) {
-        self.snapshotLRU = SnapshotLRU(capacity: prefixCacheSlots)
+    init(prefixCacheSlots: Int = 16, prefixCacheBytesMB: Int = 2048) {
+        self.snapshotLRU = SnapshotLRU(
+            capacity: prefixCacheSlots, maxBytes: prefixCacheBytesMB * 1024 * 1024)
     }
 
     /// Reset to empty (e.g. after model unload or when reuse is impossible).
