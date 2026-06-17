@@ -55,7 +55,8 @@ public struct MLXInferenceEngine: InferenceEngine {
         self.promptCache = PromptCacheBox(
             prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0)
         self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
-        self.mtpScheduler = MTPScheduler(container: container)
+        self.mtpScheduler = MTPScheduler(
+            container: container, snapshotBlock: perf.prefixCache ? perf.snapshotBlock : 512)
         // Concurrency the gate admits. MTP requests go to the fair scheduler (which interleaves
         // decode steps), and batchable non-MTP requests go to the batch engine — both want N
         // requests admitted concurrently. A plain non-batchable model still serializes at 1.

@@ -52,8 +52,11 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Max requests waiting for a generation slot before returning 429. Default 0 = unbounded (always queue, never reject).")
     var maxQueue: Int = 0
 
-    @Option(name: .long, help: "Prefix-snapshot cache slots (LRU) for cross-request reuse on the MTP path. Multi-slot so an unrelated request (e.g. an IDE's title-generation) can't evict a valuable system-prompt snapshot. Each slot holds a full KV snapshot (can be hundreds of MB). Default 4; 0 disables reuse.")
-    var prefixCacheSlots: Int = 4
+    @Option(name: .long, help: "Prefix-snapshot cache slots (LRU) for cross-request reuse on the MTP path. Holds block-boundary snapshots so conversations sharing a system prompt reuse it. Each snapshot is small (~4.5MB at 10k tok, 4-bit KV). Default 16; 0 disables reuse.")
+    var prefixCacheSlots: Int = 16
+
+    @Option(name: .long, help: "Token granularity for prefix-snapshot capture (block-aligned). Smaller = more cross-conversation reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less RAM. Default 512.")
+    var snapshotBlock: Int = 512
 
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
@@ -83,7 +86,8 @@ struct MLXZServe: AsyncParsableCommand {
             useMTP: mtp,
             gpuCacheLimitMB: gpuCacheMb,
             maxBatch: maxBatch,
-            prefixCacheSlots: prefixCacheSlots
+            prefixCacheSlots: prefixCacheSlots,
+            snapshotBlock: snapshotBlock
         )
         let manager = ModelManager(
             loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)

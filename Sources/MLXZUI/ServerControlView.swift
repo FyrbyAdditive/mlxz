@@ -30,6 +30,32 @@ struct ServerControlView: View {
                 }
             }
 
+            Section {
+                let perf = Bindable(model.perfSettings)
+                Picker("KV cache compression", selection: perf.kvBits) {
+                    Text("Off (fp16)").tag(0)
+                    Text("8-bit").tag(8)
+                    Text("4-bit").tag(4)
+                }
+                Stepper(
+                    "Prefix cache slots: \(model.perfSettings.prefixCacheSlots)",
+                    value: perf.prefixCacheSlots, in: 0...64)
+                Picker("Snapshot block", selection: perf.snapshotBlock) {
+                    Text("256 (more reuse)").tag(256)
+                    Text("512").tag(512)
+                    Text("1024").tag(1024)
+                    Text("2048 (less RAM)").tag(2048)
+                }
+            } header: {
+                Text("Performance")
+            } footer: {
+                Text(
+                    "KV compression shrinks the cache (4-bit is lossless for greedy on large models). "
+                    + "Prefix cache reuses a shared system prompt across requests; more slots / smaller "
+                    + "blocks raise reuse but use a little more memory. Changes apply on the next model load.")
+                .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Binding") {
                 TextField("Host", text: $model.host).disabled(model.bindLAN)
                 TextField("Port", value: $model.port, format: .number.grouping(.never))

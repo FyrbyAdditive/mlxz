@@ -37,11 +37,19 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// serialized/rejected. 1 effectively serializes. Default 8.
     public var maxBatch: Int
 
+    /// Token granularity at which prefix snapshots are captured during prefill (block-aligned). A
+    /// future request sharing a prefix reuses the largest block boundary ≤ the shared length, so
+    /// smaller = more reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less
+    /// RAM. Default 512. Only used when `prefixCache` is true.
+    public var snapshotBlock: Int
+
     /// Number of prefix-snapshot slots in the MTP cross-request cache (LRU). Multi-slot so an
     /// unrelated request (e.g. an IDE's title-generation between chat turns) can't evict a valuable
-    /// system-prompt snapshot. 1 = old single-slot behavior; 0 = disable cross-request reuse. Each
-    /// slot holds a full KV snapshot for its prefix (can be hundreds of MB on large models), so keep
-    /// this modest. Default 4. Only used when `prefixCache` is true.
+    /// system-prompt snapshot, and so each request's block-boundary snapshots coexist with other
+    /// conversations'. 1 = single-slot; 0 = disable cross-request reuse. Each snapshot is small for
+    /// the hybrid model (measured ~4.5MB at 10k tokens — the GatedDeltaNet state is O(1) and the
+    /// attention KV is 4-bit-quantized), so a generous count is cheap. Default 16. Used when
+    /// `prefixCache` is true.
     public var prefixCacheSlots: Int
 
     public init(
@@ -53,7 +61,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         useMTP: Bool = true,
         gpuCacheLimitMB: Int? = 512,
         maxBatch: Int = 8,
-        prefixCacheSlots: Int = 4
+        prefixCacheSlots: Int = 16,
+        snapshotBlock: Int = 512
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
@@ -64,6 +73,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.gpuCacheLimitMB = gpuCacheLimitMB
         self.maxBatch = maxBatch
         self.prefixCacheSlots = prefixCacheSlots
+        self.snapshotBlock = snapshotBlock
     }
 
     public static let `default` = EnginePerfOptions()

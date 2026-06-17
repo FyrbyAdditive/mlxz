@@ -58,11 +58,17 @@ public final class AppModel {
     private let logger = Logger(label: "mlxz.app")
     private var memoryMonitor: MemoryPressureMonitor?
 
+    /// User-facing performance settings (KV bits, prefix-cache slots, snapshot block), persisted and
+    /// applied on the next model load via the loader's perf provider.
+    public let perfSettings: PerfSettings
+
     public init(
         loader: any ModelLoading,
         downloader: any ModelDownloading,
-        embeddingLoader: any EmbeddingLoading
+        embeddingLoader: any EmbeddingLoading,
+        perfSettings: PerfSettings = PerfSettings()
     ) {
+        self.perfSettings = perfSettings
         self.downloads = DownloadManager(downloader: downloader)
         let logStore = self.logStore
         let manager = ModelManager(loader: loader)

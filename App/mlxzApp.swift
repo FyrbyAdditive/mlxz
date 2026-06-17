@@ -5,11 +5,17 @@ import MLXZInference
 /// The macOS app. Composition root: supplies the concrete MLX loader to the UI's AppModel.
 @main
 struct MLXZApp: App {
-    @State private var model = AppModel(
-        loader: MLXModelLoader(),
-        downloader: MLXModelDownloader(),
-        embeddingLoader: MLXEmbeddingLoader()
-    )
+    @State private var model: AppModel = {
+        // Persisted perf settings, read PER LOAD by the loader's provider so GUI changes apply on the
+        // next model load (KV-quant bits, prefix-cache slots, snapshot block).
+        let perf = PerfSettings()
+        return AppModel(
+            loader: MLXModelLoader(perfProvider: { perf.engineOptions() }),
+            downloader: MLXModelDownloader(),
+            embeddingLoader: MLXEmbeddingLoader(),
+            perfSettings: perf
+        )
+    }()
 
     var body: some Scene {
         WindowGroup {

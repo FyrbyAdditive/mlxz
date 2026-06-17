@@ -36,9 +36,11 @@ actor MTPScheduler {
     private var cancelled: Set<Int> = []
     private var nextID = 0
     private var running = false
+    private let snapshotBlock: Int
 
-    init(container: ModelContainer) {
+    init(container: ModelContainer, snapshotBlock: Int = 512) {
         self.container = container
+        self.snapshotBlock = max(1, snapshotBlock)
     }
 
     /// Submit an MTP request; returns its `Generation` stream. The scheduler starts on first submit.
@@ -90,11 +92,12 @@ actor MTPScheduler {
             let burst = contended ? 1 : 8
             let admitBox = SendableValueBox(toAdmit)
             let activeBox = SendableValueBox(active)
+            let block = snapshotBlock
             let outBox = try? await container.perform { context in
                 SendableValueBox(
                     await Self.tick(
                         context: context, admit: admitBox.consume(), active: activeBox.consume(),
-                        cancelled: cancelledNow, maxSteps: burst))
+                        cancelled: cancelledNow, maxSteps: burst, snapshotBlock: block))
             }
             guard let outBox else { running = false; return }
             let out = outBox.consume()
@@ -111,7 +114,7 @@ actor MTPScheduler {
     /// `@Sendable` perform closure without actor-isolation conflicts.
     private static func tick(
         context: ModelContext, admit: [Pending], active: [Active], cancelled: Set<Int>,
-        maxSteps: Int
+        maxSteps: Int, snapshotBlock: Int
     ) async -> TickResult {
         guard let model = context.model as? any MTPSpeculativeModel, model.hasMTP else {
             for a in active { a.session.cancel() }
@@ -144,6 +147,12 @@ actor MTPScheduler {
             }
             let snapshotAt = max(restoreCount, newTokens.count - 256)
 
+            // TEMP DIAGNOSTIC (prefix-reuse A/B): hit + reused/fresh tokens per request.
+            if ProcessInfo.processInfo.environment["MLXZ_PREFIX_DIAG"] == "1" {
+                FileHandle.standardError.write(Data(
+                    "[PREFIX] prompt=\(newTokens.count) reused=\(restoreCount) fresh=\(newTokens.count - restoreCount)\n".utf8))
+            }
+
             let stopTokenIds = MTPStopTokens.build(
                 eosTokenIds: context.configuration.eosTokenIds,
                 tokenizerEOSTokenId: context.tokenizer.eosTokenId,
@@ -153,7 +162,7 @@ actor MTPScheduler {
             let session = MTPSession(
                 model: model, context: context, parameters: p.parameters,
                 promptTokens: promptTokens, modelCache: restoreModel, mtpCache: restoreMtp,
-                skipPrefill: restoreCount, snapshotAt: snapshotAt,
+                skipPrefill: restoreCount, snapshotAt: snapshotAt, snapshotBlock: snapshotBlock,
                 stopTokenIds: stopTokenIds, continuation: p.continuation, result: MTPCacheResult())
             sessions.append(Active(session: session, id: p.id, lru: lru))
         }

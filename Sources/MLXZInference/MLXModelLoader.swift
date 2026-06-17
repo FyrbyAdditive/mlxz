@@ -13,17 +13,27 @@ import Tokenizers
 /// `loadModelContainer` auto-dispatches between text and vision models — Qwen dense, Qwen
 /// MoE (Qwen3.6-35B-A3B), and VLMs all load through this one path.
 public struct MLXModelLoader: ModelLoading {
-    private let perf: EnginePerfOptions
+    /// Perf options are read PER LOAD via this provider, so the GUI can change them (KV bits,
+    /// prefix-cache slots, snapshot block) and have the next model load pick them up without
+    /// rebuilding the loader/manager. The CLI passes a constant.
+    private let perfProvider: @Sendable () -> EnginePerfOptions
     /// Default drafter (e.g. from `mlxz-serve --mtp-draft`). A per-load `draftModelID` overrides it.
     private let defaultDraftModelID: String?
 
     public init(perf: EnginePerfOptions = .default, draftModelID: String? = nil) {
-        self.perf = perf
+        self.init(perfProvider: { perf }, draftModelID: draftModelID)
+    }
+
+    /// Provider-based init: `perfProvider` is invoked on each `load` so settings changes apply to
+    /// the next load. (The GUI uses this; the convenience `init(perf:)` wraps a constant.)
+    public init(
+        perfProvider: @escaping @Sendable () -> EnginePerfOptions, draftModelID: String? = nil
+    ) {
+        self.perfProvider = perfProvider
         self.defaultDraftModelID = draftModelID
-        // Tune the MLX runtime once, before any model is loaded. Both composition roots (the
-        // headless server and the GUI app) build the loader at startup, so this is the natural
-        // single point; `configure` is idempotent.
-        MLXRuntime.configure(perf: perf)
+        // Tune the MLX runtime once, before any model is loaded (GPU cache limit is a process-wide
+        // one-time setting). `configure` is idempotent; uses the initial perf snapshot.
+        MLXRuntime.configure(perf: perfProvider())
     }
 
     public func load(
@@ -32,6 +42,7 @@ public struct MLXModelLoader: ModelLoading {
         progress: @escaping @Sendable (LoadProgress) -> Void
     ) async throws -> any InferenceEngine {
         let draftModelID = draftModelID ?? defaultDraftModelID
+        let perf = perfProvider()  // read current settings (GUI may have changed them)
         // A standalone MTP drafter checkpoint (e.g. "…-MTP-4bit") contains only the MTP head, not a
         // full backbone — it can't be loaded as a primary model, only attached to one via
         // `draftModelID`. Reject it early with a clear message instead of failing deep in MLX.
