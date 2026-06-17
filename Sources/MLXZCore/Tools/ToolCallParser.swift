@@ -43,8 +43,13 @@ public struct ToolCallParser: Sendable {
     private var callIndex = 0
     private let idPrefix: String
 
-    public init(idPrefix: String = "call") {
-        self.idPrefix = idPrefix
+    /// - Parameter idPrefix: prefix for generated tool-call ids. Defaults to a process-unique
+    ///   token so ids never collide ACROSS requests/turns — each request builds a fresh parser, so
+    ///   a per-parser counter alone would emit `call_1` every turn, and Copilot matches tool
+    ///   results to calls by id: duplicate ids across an agent loop break that matching and stall
+    ///   the agent (it re-issues the same call and then returns an empty response).
+    public init(idPrefix: String? = nil) {
+        self.idPrefix = idPrefix ?? "call_\(UUID().uuidString.prefix(8))"
     }
 
     /// Consume a chunk of model text, returning visible text + any completed tool calls.
@@ -135,9 +140,15 @@ public struct ToolCallParser: Sendable {
         return text.count - keep
     }
 
-    /// Parse a single tool-call JSON body of the form `{"name": ..., "arguments": {...}}`.
+    /// Parse a single tool-call body in either format the Qwen templates use:
+    ///   - JSON:  `{"name": ..., "arguments": {...}}`
+    ///   - XML :  `<function=NAME><parameter=ARG>value</parameter>...</function>`
+    /// Qwen3.6's chat template instructs the XML form; older/Hermes templates use JSON.
     private mutating func parseCallBody(_ body: String) -> ToolCall? {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("<function=") {
+            return parseXMLCallBody(trimmed)
+        }
         guard let data = trimmed.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let name = obj["name"] as? String
@@ -159,6 +170,45 @@ public struct ToolCallParser: Sendable {
 
         callIndex += 1
         return ToolCall(id: "\(idPrefix)_\(callIndex)", name: name, argumentsJSON: argumentsJSON)
+    }
+
+    /// Parse the Qwen XML call body: `<function=NAME>` then zero or more
+    /// `<parameter=KEY>\nVALUE\n</parameter>` blocks. Values are strings as emitted; we coerce
+    /// obvious JSON scalars (numbers/bools) so the arguments JSON is faithful, defaulting to string.
+    private mutating func parseXMLCallBody(_ body: String) -> ToolCall? {
+        guard let fnRange = body.range(of: "<function="),
+            let fnEnd = body.range(of: ">", range: fnRange.upperBound ..< body.endIndex)
+        else { return nil }
+        let name = String(body[fnRange.upperBound ..< fnEnd.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+
+        var args: [String: Any] = [:]
+        var search = fnEnd.upperBound
+        while let pStart = body.range(of: "<parameter=", range: search ..< body.endIndex),
+            let pNameEnd = body.range(of: ">", range: pStart.upperBound ..< body.endIndex),
+            let pClose = body.range(of: "</parameter>", range: pNameEnd.upperBound ..< body.endIndex)
+        {
+            let key = String(body[pStart.upperBound ..< pNameEnd.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = String(body[pNameEnd.upperBound ..< pClose.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty { args[key] = Self.coerceScalar(raw) }
+            search = pClose.upperBound
+        }
+
+        callIndex += 1
+        let argumentsJSON = args.isEmpty ? "{}" : (Self.compactJSON(args) ?? "{}")
+        return ToolCall(id: "\(idPrefix)_\(callIndex)", name: name, argumentsJSON: argumentsJSON)
+    }
+
+    /// Coerce a parameter string to a JSON-faithful scalar: int, double, bool, or string fallback.
+    private static func coerceScalar(_ s: String) -> Any {
+        if let i = Int(s) { return i }
+        if let d = Double(s) { return d }
+        if s == "true" { return true }
+        if s == "false" { return false }
+        return s
     }
 
     /// Serialize a JSON container (object or array) to compact text, or nil on failure.

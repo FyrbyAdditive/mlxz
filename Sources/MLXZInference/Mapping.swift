@@ -33,6 +33,44 @@ extension MLXInferenceEngine {
         return Chat.Message(role: role, content: text, images: images, videos: [])
     }
 
+    /// Map our `ChatMessage` to an OpenAI-shaped message dictionary for the chat template's
+    /// `.messages` path. Unlike `Chat.Message` (which has no tool fields and silently drops them),
+    /// this preserves assistant `tool_calls` and `tool` results — so a multi-turn agentic
+    /// conversation is replayed faithfully (the template renders `<tool_call>`/`<tool_response>`).
+    /// Without this the model sees a broken history and bails after ~2 tokens.
+    static func mapMessageDict(_ message: ChatMessage) -> [String: any Sendable] {
+        let roleString: String = switch message.role {
+        case .system: "system"
+        case .user: "user"
+        case .assistant: "assistant"
+        case .tool: "tool"
+        }
+        var dict: [String: any Sendable] = ["role": roleString]
+        // Text content (image parts aren't supported on the tool/agentic path).
+        dict["content"] = message.content.compactMap { part -> String? in
+            if case let .text(t) = part { return t }
+            return nil
+        }.joined()
+
+        if !message.toolCalls.isEmpty {
+            dict["tool_calls"] = message.toolCalls.map { call -> [String: any Sendable] in
+                // arguments must be a JSON object for the template's `arguments|items` iteration.
+                let argsObj: any Sendable =
+                    (call.argumentsJSON.data(using: .utf8)
+                        .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                        as? [String: any Sendable]) ?? [:]
+                return [
+                    "id": call.id, "type": "function",
+                    "function": ["name": call.name, "arguments": argsObj],
+                ]
+            }
+        }
+        if let toolCallID = message.toolCallID {
+            dict["tool_call_id"] = toolCallID
+        }
+        return dict
+    }
+
     /// Map our `ToolDefinition` to the package's OpenAI-shaped `ToolSpec` dictionary.
     static func mapTool(_ tool: ToolDefinition) -> ToolSpec {
         var function: [String: any Sendable] = ["name": tool.name]

@@ -44,6 +44,16 @@ public struct MLXModelLoader: ModelLoading {
             revision: descriptor.revision ?? "main"
         )
 
+        // Some models (e.g. Qwen3.6) ship their chat template as a standalone `chat_template.jinja`
+        // and leave `chat_template` absent from tokenizer_config.json. swift-transformers only reads
+        // the template from tokenizer_config.json, so without this fixup the tokenizer has NO
+        // template: tools and the `<tool_call>` protocol never render into the prompt, the model can
+        // only narrate ("I should call list_dir") instead of emitting a tool call, and the VS Code
+        // agent stalls. Fold the .jinja into tokenizer_config.json BEFORE the container builds the
+        // tokenizer so it picks the template up.
+        await Self.ensureChatTemplateInConfig(
+            repoID: descriptor.repoID, revision: descriptor.revision ?? "main", progress: progress)
+
         let container = try await loadModelContainer(
             from: #hubDownloader(),
             using: #huggingFaceTokenizerLoader(),
@@ -85,6 +95,42 @@ public struct MLXModelLoader: ModelLoading {
             container: container,
             perf: perf
         )
+    }
+
+    /// If the model's `tokenizer_config.json` has no `chat_template` but the snapshot ships a
+    /// standalone `chat_template.jinja`, fold the .jinja into the config so swift-transformers (which
+    /// only reads the config's `chat_template`) applies it — enabling tool rendering. Idempotent and
+    /// best-effort: any failure leaves the files untouched and load proceeds.
+    static func ensureChatTemplateInConfig(
+        repoID: String, revision: String,
+        progress: @escaping @Sendable (LoadProgress) -> Void
+    ) async {
+        guard let repo = Repo.ID(rawValue: repoID) else { return }
+        let dir: URL
+        do {
+            dir = try await HubClient().downloadSnapshot(of: repo, revision: revision)
+        } catch {
+            return  // not yet cached / offline — skip; the normal load path still runs.
+        }
+        let configURL = dir.appendingPathComponent("tokenizer_config.json")
+        let jinjaURL = dir.appendingPathComponent("chat_template.jinja")
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: configURL.path), fm.fileExists(atPath: jinjaURL.path),
+            let configData = try? Data(contentsOf: configURL),
+            var config = try? JSONSerialization.jsonObject(with: configData) as? [String: Any]
+        else { return }
+        // Already has a usable template → nothing to do.
+        if let existing = config["chat_template"] as? String, !existing.isEmpty { return }
+        guard let template = try? String(contentsOf: jinjaURL, encoding: .utf8),
+            !template.isEmpty
+        else { return }
+        config["chat_template"] = template
+        guard
+            let merged = try? JSONSerialization.data(
+                withJSONObject: config, options: [.sortedKeys])
+        else { return }
+        try? merged.write(to: configURL, options: .atomic)
+        progress(LoadProgress(fraction: nil, detail: "applied chat template for tool calling"))
     }
 
     /// Read the drafter's quantization (bits/group size) from its config.json.

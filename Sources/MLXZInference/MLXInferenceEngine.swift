@@ -65,14 +65,42 @@ public struct MLXInferenceEngine: InferenceEngine {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 continuation.yield(.started(.init(modelID: modelID)))
-                // Fallback parser for models whose tool calls arrive as raw <tool_call> text
-                // rather than as native `.toolCall` events.
+                // Split the model's <think>…</think> chain-of-thought out of the text BEFORE
+                // tool-call parsing, so reasoning is surfaced on its own channel (clients render it
+                // separately) and never leaks into the visible content or gets mis-parsed as a tool
+                // call. Visible text then flows through the tool-call fallback parser as before.
+                var think = ThinkParser()
                 var fallback = ToolCallParser()
-                var sawNativeToolCall = false
+                var sawToolCall = false  // true if ANY tool call (native or parsed from text) was emitted
                 do {
-                    let chat = request.messages.map(Self.mapMessage)
                     let tools = request.tools.map { $0.map(Self.mapTool) }
-                    let userInput = UserInput(chat: chat, tools: tools)
+                    // Qwen3.5/3.6's chat template pre-opens a `<think>` block on every assistant
+                    // turn. In an agentic flow the model then narrates its plan inside that block
+                    // and stops at <|im_end|> WITHOUT ever closing `</think>` or emitting the
+                    // `<tool_call>` — so the VS Code agent gets no tool call and stalls (and the
+                    // reasoning leaks). When the request carries tools, disable thinking
+                    // (`enable_thinking: false` → the template emits an empty `<think></think>` and
+                    // goes straight to the answer/tool-call) so the model acts instead of musing.
+                    let additionalContext: [String: any Sendable]? =
+                        (tools?.isEmpty == false) ? ["enable_thinking": false] : nil
+
+                    // If the conversation contains tool calls/results, replay it through the raw
+                    // `.messages` dict path so `tool_calls`/`tool_call_id` reach the template
+                    // (`Chat.Message` has no tool fields and would drop them, breaking the agent
+                    // loop). Plain/image conversations keep the `.chat` path (which handles images).
+                    let hasToolHistory = request.messages.contains {
+                        !$0.toolCalls.isEmpty || $0.toolCallID != nil
+                    }
+                    let userInput: UserInput
+                    if hasToolHistory {
+                        userInput = UserInput(
+                            messages: request.messages.map(Self.mapMessageDict),
+                            tools: tools, additionalContext: additionalContext)
+                    } else {
+                        userInput = UserInput(
+                            chat: request.messages.map(Self.mapMessage),
+                            tools: tools, additionalContext: additionalContext)
+                    }
                     let stream: AsyncStream<Generation>
                     if useMTP {
                         // Native MTP self-speculative decoding, with whole-prefix cache reuse so a
@@ -93,24 +121,39 @@ public struct MLXInferenceEngine: InferenceEngine {
                         if Task.isCancelled { break }
                         switch item {
                         case .chunk(let text):
-                            let parsed = fallback.consume(text)
-                            if !parsed.visibleText.isEmpty {
-                                continuation.yield(.textDelta(parsed.visibleText))
+                            let split = think.consume(text)
+                            if !split.reasoning.isEmpty {
+                                continuation.yield(.reasoningDelta(split.reasoning))
                             }
-                            for call in parsed.toolCalls {
-                                continuation.yield(.toolCall(call))
+                            if !split.visibleText.isEmpty {
+                                let parsed = fallback.consume(split.visibleText)
+                                if !parsed.visibleText.isEmpty {
+                                    continuation.yield(.textDelta(parsed.visibleText))
+                                }
+                                for call in parsed.toolCalls {
+                                    sawToolCall = true
+                                    continuation.yield(.toolCall(call))
+                                }
                             }
 
                         case .toolCall(let nativeCall):
-                            sawNativeToolCall = true
+                            sawToolCall = true
                             continuation.yield(.toolCall(Self.mapNativeToolCall(nativeCall)))
 
                         case .info(let info):
-                            let tail = fallback.finish()
+                            let thinkTail = think.finish()
+                            if !thinkTail.reasoning.isEmpty {
+                                continuation.yield(.reasoningDelta(thinkTail.reasoning))
+                            }
+                            var tail = fallback.consume(thinkTail.visibleText)
+                            let flushed = fallback.finish()
+                            tail.visibleText += flushed.visibleText
+                            tail.toolCalls += flushed.toolCalls
                             if !tail.visibleText.isEmpty {
                                 continuation.yield(.textDelta(tail.visibleText))
                             }
                             for call in tail.toolCalls {
+                                sawToolCall = true
                                 continuation.yield(.toolCall(call))
                             }
                             let usage = TokenUsage(
@@ -118,7 +161,7 @@ public struct MLXInferenceEngine: InferenceEngine {
                                 completionTokens: info.generationTokenCount,
                                 tokensPerSecond: info.tokensPerSecond
                             )
-                            let reason = Self.mapStopReason(info.stopReason, sawToolCall: sawNativeToolCall)
+                            let reason = Self.mapStopReason(info.stopReason, sawToolCall: sawToolCall)
                             continuation.yield(.completed(.init(finishReason: reason, usage: usage)))
 
                         @unknown default:
