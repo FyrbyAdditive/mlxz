@@ -23,12 +23,6 @@ final class PromptCacheBox: @unchecked Sendable {
     /// trimming, so only whole-prefix reuse is sound.) Built with the configured capacity.
     let snapshotLRU: SnapshotLRU
 
-    /// The full prompt token sequence of the most recent MTP request, used to pick the next
-    /// snapshot boundary (the prefix this turn shares with the previous turn — the stable system
-    /// prompt). Kept separate from the snapshot LRU so the FIRST overlapping pair can still be
-    /// detected before any snapshot exists (the snapshot is captured one turn behind by design).
-    var lastPromptTokens: [Int32] = []
-
     init(prefixCacheSlots: Int = 4) {
         self.snapshotLRU = SnapshotLRU(capacity: prefixCacheSlots)
     }

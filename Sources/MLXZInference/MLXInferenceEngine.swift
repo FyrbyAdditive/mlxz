@@ -259,16 +259,15 @@ public struct MLXInferenceEngine: InferenceEngine {
                 restoreCount = match.tokens.count
             }
 
-            // 2) Snapshot point for a FUTURE request: the prefix this prompt shares with the PREVIOUS
-            //    prompt (the recurring stable region). Fall back to the matched prefix length so we
-            //    re-snapshot at least what we restored (keeps the snapshot fresh across turns).
-            let reference = cacheBox?.lastPromptTokens ?? []
-            let snapshotAt = max(
-                MTPCacheReuse.snapshotPoint(previousTokens: reference, currentTokens: newTokens),
-                restoreCount)
-
-            // Record this prompt as the reference for the next request's snapshot point.
-            cacheBox?.lastPromptTokens = newTokens
+            // 2) Snapshot point for a FUTURE request. Snapshot near the END of THIS prompt
+            //    (promptLen - margin), so the very next request — which in agentic/chat use is this
+            //    prompt plus a little more — can reuse almost all of it. Critically this fires even on
+            //    the FIRST request (no previous prompt needed), eliminating the old "one turn behind"
+            //    miss where request #2 re-prefilled ~28k tokens (~40s) it could have reused. The
+            //    margin leaves a non-empty suffix (reuseCount requires snapshot strictly shorter than
+            //    the new prompt) and absorbs small tail differences. Never below what we restored.
+            let snapshotMargin = 256
+            let snapshotAt = max(restoreCount, newTokens.count - snapshotMargin)
 
             return try mtpGenerate(
                 input: lmInput, parameters: parameters, context: context,
@@ -277,8 +276,6 @@ public struct MLXInferenceEngine: InferenceEngine {
 
         let lru = box?.snapshotLRU
 
-        guard let lru else { return inner }
-
         // Wrap the stream so that on clean completion we add the freshly-captured snapshot to the
         // LRU (additive — never evicts a better snapshot for an unrelated short prompt). The insert
         // touches non-Sendable KVCache, so it runs inside `container.perform`.
@@ -286,9 +283,9 @@ public struct MLXInferenceEngine: InferenceEngine {
         return AsyncStream { continuation in
             let task = Task {
                 for await event in inner { continuation.yield(event) }
-                let (res, lruRef) = resultBox.consume()
-                if let model = res.snapshotModelCache, let mtp = res.snapshotMtpCache,
-                    let tokens = res.snapshotTokens
+                let (res, lruOpt) = resultBox.consume()
+                if let lruRef = lruOpt, let model = res.snapshotModelCache,
+                    let mtp = res.snapshotMtpCache, let tokens = res.snapshotTokens
                 {
                     // Box the non-Sendable cache arrays to move them into the perform closure once.
                     let payload = SendableValueBox((tokens, model, mtp, lruRef))
