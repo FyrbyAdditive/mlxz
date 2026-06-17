@@ -17,18 +17,24 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// Reuse the KV cache for a shared prompt prefix across requests.
     public var prefixCache: Bool
 
+    /// Use native MTP self-speculative decoding when the loaded model has an MTP head.
+    /// Pure speedup (identical output); on by default for MTP-capable models.
+    public var useMTP: Bool
+
     public init(
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
         quantizedKVStart: Int = 0,
         maxKVSize: Int? = nil,
-        prefixCache: Bool = true
+        prefixCache: Bool = true,
+        useMTP: Bool = true
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
         self.quantizedKVStart = quantizedKVStart
         self.maxKVSize = maxKVSize
         self.prefixCache = prefixCache
+        self.useMTP = useMTP
     }
 
     public static let `default` = EnginePerfOptions()

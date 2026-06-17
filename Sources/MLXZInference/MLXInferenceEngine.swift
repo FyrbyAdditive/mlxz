@@ -48,6 +48,18 @@ public struct MLXInferenceEngine: InferenceEngine {
             && !request.messages.contains { $0.hasImages }
             && request.sampling.seed == nil
 
+        // Use native MTP self-speculative decoding whenever the model has an MTP head (it is a
+        // pure speedup with identical output), unless the request explicitly opts out by setting
+        // a non-MTP speculative mode. Text-only requests without a fixed seed.
+        let mtpOptOut: Bool = {
+            if case .draftModel = request.speculative?.mode { return true }
+            return false
+        }()
+        let useMTP = perf.useMTP
+            && capabilities.contains(.speculative)
+            && !mtpOptOut
+            && !request.messages.contains { $0.hasImages }
+
         // Capture only Sendable values (`request`, `container`, `parameters`). The non-Sendable
         // `UserInput`/`LMInput` are built and consumed entirely inside the task.
         return AsyncThrowingStream { continuation in
@@ -62,7 +74,12 @@ public struct MLXInferenceEngine: InferenceEngine {
                     let tools = request.tools.map { $0.map(Self.mapTool) }
                     let userInput = UserInput(chat: chat, tools: tools)
                     let stream: AsyncStream<Generation>
-                    if usePrefixCache {
+                    if useMTP {
+                        // Native MTP self-speculative decoding. Manages its own caches, so it
+                        // bypasses the cross-request prefix cache.
+                        stream = try await Self.mtpStream(
+                            container: container, userInput: userInput, parameters: parameters)
+                    } else if usePrefixCache {
                         stream = try await Self.cachedStream(
                             container: container, box: promptCache,
                             userInput: userInput, parameters: parameters)
@@ -112,6 +129,20 @@ public struct MLXInferenceEngine: InferenceEngine {
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Build a generation stream using the model's native MTP head for self-speculative decoding.
+    /// Runs inside `container.perform` because the model/caches are non-Sendable.
+    static func mtpStream(
+        container: ModelContainer,
+        userInput: consuming UserInput,
+        parameters: GenerateParameters
+    ) async throws -> AsyncStream<Generation> {
+        let boxedInput = SendableValueBox(userInput)
+        return try await container.perform { context in
+            let lmInput = try await context.processor.prepare(input: boxedInput.consume())
+            return try mtpGenerate(input: lmInput, parameters: parameters, context: context)
         }
     }
 

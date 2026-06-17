@@ -64,7 +64,8 @@ var targets: [Target] = [
 
 if includeMLX {
     dependencies += [
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "3.31.3"),
+        // Local fork of mlx-swift-lm with native MTP speculative decoding (see ../mlx-swift-lm-mtp).
+        .package(name: "mlx-swift-lm", path: "../mlx-swift-lm-mtp"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
     ]

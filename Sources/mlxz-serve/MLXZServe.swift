@@ -37,6 +37,12 @@ struct MLXZServe: AsyncParsableCommand {
     @Flag(name: .long, inversion: .prefixedNo, help: "Reuse the KV cache for shared prompt prefixes across requests.")
     var prefixCache: Bool = true
 
+    @Flag(name: .long, inversion: .prefixedNo, help: "Use native MTP self-speculative decoding for MTP-capable models.")
+    var mtp: Bool = true
+
+    @Option(name: .long, help: "Attach a standalone MTP drafter checkpoint (repo id) to the model for draft-model speculative decoding.")
+    var mtpDraft: String?
+
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
@@ -61,9 +67,11 @@ struct MLXZServe: AsyncParsableCommand {
         let perf = EnginePerfOptions(
             kvBits: kvBits,
             maxKVSize: maxKvSize,
-            prefixCache: prefixCache
+            prefixCache: prefixCache,
+            useMTP: mtp
         )
-        let manager = ModelManager(loader: MLXModelLoader(perf: perf), logger: logger)
+        let manager = ModelManager(
+            loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)
 
         logger.info("loading model (first run downloads from HuggingFace)…", metadata: ["model": .string(model)])
         try await manager.load(descriptor)

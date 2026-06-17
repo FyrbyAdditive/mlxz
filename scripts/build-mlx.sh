@@ -16,6 +16,11 @@ cd "$ROOT"
 # Include the MLX-dependent targets (gated out of the default `swift build` graph).
 export MLXZ_MLX=1
 
+# SwiftPM clones dependency caches as bare repos, but invokes git with
+# `-c safe.bareRepository=explicit`, which then refuses to read them. GIT_CONFIG_PARAMETERS
+# is applied last and wins, restoring access. (Needed once the local fork triggers re-resolution.)
+export GIT_CONFIG_PARAMETERS="'safe.bareRepository=all'"
+
 # One-time: the Metal toolchain is required to compile MLX's Metal kernels.
 if ! xcrun --find metal >/dev/null 2>&1; then
   echo "Metal toolchain not found — downloading (one-time, ~700MB)…"
