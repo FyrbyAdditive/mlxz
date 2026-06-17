@@ -32,7 +32,11 @@ public final class AppModel {
     private let server: InferenceServer
     private let logger = Logger(label: "mlxz.app")
 
-    public init(loader: any ModelLoading, downloader: any ModelDownloading) {
+    public init(
+        loader: any ModelLoading,
+        downloader: any ModelDownloading,
+        embeddingLoader: any EmbeddingLoading
+    ) {
         self.downloads = DownloadManager(downloader: downloader)
         let logStore = self.logStore
         let manager = ModelManager(loader: loader)
@@ -43,7 +47,8 @@ public final class AppModel {
             logSink: { line in
                 Task { @MainActor in logStore.append(line) }
             },
-            extraModelIDs: { store.installedModels().map(\.descriptor.repoID) }
+            extraModelIDs: { store.installedModels().map(\.descriptor.repoID) },
+            embeddingManager: EmbeddingManager(loader: embeddingLoader)
         )
     }
 
@@ -108,6 +113,52 @@ public final class AppModel {
     public func stopServer() async {
         await server.stop()
         serverRunning = false
+    }
+
+    // MARK: - Playground (dogfood the local server)
+
+    /// Send a chat message to the *running local server* and stream the reply text.
+    /// Returns the full assistant text. Throws if the server isn't running.
+    public func playgroundSend(_ prompt: String, onDelta: @escaping @MainActor (String) -> Void) async throws {
+        guard serverRunning else {
+            throw AppError.serverNotRunning
+        }
+        let url = URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let payload: [String: Any] = [
+            "model": modelState.loadedDescriptor?.repoID ?? "local",
+            "stream": true,
+            "messages": [["role": "user", "content": prompt]],
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (bytes, _) = try await URLSession.shared.bytes(for: request)
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data: ") else { continue }
+            let payload = String(line.dropFirst(6))
+            if payload == "[DONE]" { break }
+            guard let data = payload.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = obj["choices"] as? [[String: Any]],
+                  let delta = choices.first?["delta"] as? [String: Any],
+                  let content = delta["content"] as? String
+            else { continue }
+            onDelta(content)
+        }
+    }
+
+    public enum AppError: Error, LocalizedError {
+        case serverNotRunning
+        public var errorDescription: String? {
+            switch self {
+            case .serverNotRunning: "Start the server before using the playground."
+            }
+        }
     }
 
     // MARK: - Copilot config

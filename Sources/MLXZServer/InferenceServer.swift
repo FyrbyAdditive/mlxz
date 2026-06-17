@@ -27,6 +27,8 @@ public actor InferenceServer {
     private let logSink: (@Sendable (String) -> Void)?
     /// Optional source of extra servable model ids for `/v1/models`.
     private let extraModelIDs: (@Sendable () -> [String])?
+    /// Optional embedding manager; enables `/v1/embeddings` when set.
+    private let embeddingManager: EmbeddingManager?
 
     private var runTask: Task<Void, any Error>?
     private(set) public var isRunning = false
@@ -36,13 +38,15 @@ public actor InferenceServer {
         maxConcurrent: Int = 1,
         logger: Logger = Logger(label: "mlxz.server"),
         logSink: (@Sendable (String) -> Void)? = nil,
-        extraModelIDs: (@Sendable () -> [String])? = nil
+        extraModelIDs: (@Sendable () -> [String])? = nil,
+        embeddingManager: EmbeddingManager? = nil
     ) {
         self.manager = manager
         self.gate = GenerationGate(maxConcurrent: maxConcurrent)
         self.logger = logger
         self.logSink = logSink
         self.extraModelIDs = extraModelIDs
+        self.embeddingManager = embeddingManager
     }
 
     public func start(_ config: ServerConfig) async throws {
@@ -53,7 +57,8 @@ public actor InferenceServer {
             gate: gate,
             apiKey: config.apiKey,
             logSink: logSink,
-            extraModelIDs: extraModelIDs
+            extraModelIDs: extraModelIDs,
+            embeddingManager: embeddingManager
         ).build()
 
         let app = Application(

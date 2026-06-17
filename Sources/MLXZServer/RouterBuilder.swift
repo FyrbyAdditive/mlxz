@@ -15,6 +15,8 @@ struct RouterBuilder {
     /// Optional source of additional servable model ids for `/v1/models` (e.g. installed models).
     /// The currently-loaded model is always included.
     var extraModelIDs: (@Sendable () -> [String])?
+    /// Optional embedding manager; when set, `/v1/embeddings` is served.
+    var embeddingManager: EmbeddingManager?
 
     func build() -> Router<BasicRequestContext> {
         let router = Router()
@@ -25,8 +27,11 @@ struct RouterBuilder {
 
         register(ChatCompletionsEndpoint(), on: router)
         register(ResponsesEndpoint(), on: router)
-        // Future endpoints land here with one line each:
-        // register(ModelsListEndpoint(), on: router)
+        register(CompletionsEndpoint(), on: router)
+
+        if let embeddingManager {
+            registerEmbeddings(embeddingManager, on: router)
+        }
 
         router.get("/health") { _, _ in
             Response(
@@ -56,6 +61,29 @@ struct RouterBuilder {
             )
         }
         return router
+    }
+
+    /// POST /v1/embeddings — embeds input text(s) using the requested model.
+    private func registerEmbeddings(_ manager: EmbeddingManager, on router: Router<BasicRequestContext>) {
+        router.post("/v1/embeddings") { request, _ -> Response in
+            let wire: EmbeddingsRequest
+            do {
+                let bytes = try await request.body.collect(upTo: 16 * 1024 * 1024)
+                wire = try JSONDecoder().decode(EmbeddingsRequest.self, from: Data(buffer: bytes))
+            } catch {
+                return errorResponse(APIError(kind: .invalidRequest, message: "Malformed request body: \(error)", code: "invalid_body"))
+            }
+            guard let model = wire.model, !model.isEmpty else {
+                return errorResponse(APIError(kind: .invalidRequest, message: "`model` is required.", code: "missing_model", param: "model"))
+            }
+            do {
+                let result = try await manager.embed(EmbeddingRequest(inputs: wire.input.values, model: model))
+                let data = try EmbeddingsResponse.json(result, model: model)
+                return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: data)))
+            } catch {
+                return errorResponse(asAPIError(error))
+            }
+        }
     }
 
     /// Build the OpenAI `/v1/models` list body.

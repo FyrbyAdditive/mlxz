@@ -13,12 +13,14 @@ public struct ContentView: View {
     enum Section: String, CaseIterable, Identifiable {
         case models = "Models"
         case server = "Server"
+        case playground = "Playground"
         case logs = "Logs"
         var id: String { rawValue }
         var icon: String {
             switch self {
             case .models: "shippingbox"
             case .server: "network"
+            case .playground: "bubble.left.and.bubble.right"
             case .logs: "text.alignleft"
             }
         }
@@ -34,6 +36,7 @@ public struct ContentView: View {
             switch selection {
             case .models: ModelLibraryView(model: model)
             case .server: ServerControlView(model: model)
+            case .playground: PlaygroundView(model: model)
             case .logs: LogsView(model: model)
             }
         }
