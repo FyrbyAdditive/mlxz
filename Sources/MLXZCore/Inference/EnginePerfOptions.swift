@@ -28,6 +28,11 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// identically). nil = leave MLX's default. Default: 512 MB.
     public var gpuCacheLimitMB: Int?
 
+    /// Max sequences decoded together in one batched forward pass (continuous batching) for plain
+    /// (non-MTP) requests. >1 lets concurrent requests run concurrently instead of being
+    /// serialized/rejected. 1 effectively serializes. Default 8.
+    public var maxBatch: Int
+
     public init(
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
@@ -35,7 +40,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         maxKVSize: Int? = nil,
         prefixCache: Bool = true,
         useMTP: Bool = true,
-        gpuCacheLimitMB: Int? = 512
+        gpuCacheLimitMB: Int? = 512,
+        maxBatch: Int = 8
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
@@ -44,6 +50,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.prefixCache = prefixCache
         self.useMTP = useMTP
         self.gpuCacheLimitMB = gpuCacheLimitMB
+        self.maxBatch = maxBatch
     }
 
     public static let `default` = EnginePerfOptions()

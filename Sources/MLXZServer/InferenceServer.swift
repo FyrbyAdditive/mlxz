@@ -37,7 +37,8 @@ public actor InferenceServer {
 
     public init(
         manager: ModelManager,
-        maxConcurrent: Int = 1,
+        maxConcurrent: Int = 8,
+        maxWaiting: Int = 0,
         logger: Logger = Logger(label: "mlxz.server"),
         logSink: (@Sendable (String) -> Void)? = nil,
         extraModelIDs: (@Sendable () -> [String])? = nil,
@@ -45,7 +46,7 @@ public actor InferenceServer {
         metricsSink: (@Sendable (TokenUsage) -> Void)? = nil
     ) {
         self.manager = manager
-        self.gate = GenerationGate(maxConcurrent: maxConcurrent)
+        self.gate = GenerationGate(maxConcurrent: maxConcurrent, maxWaiting: maxWaiting)
         self.logger = logger
         self.logSink = logSink
         self.extraModelIDs = extraModelIDs

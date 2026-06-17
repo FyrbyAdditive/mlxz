@@ -23,6 +23,9 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// where the GenerationGate already serializes access.
     private let promptCache = PromptCacheBox()
     private let perf: EnginePerfOptions
+    /// Continuous-batching engine for plain (non-MTP) requests, so concurrent requests decode
+    /// together instead of being serialized/rejected. Built once, shared across requests.
+    private let batchEngine: BatchGenerationEngine
 
     public init(
         descriptor: ModelDescriptor,
@@ -34,6 +37,7 @@ public struct MLXInferenceEngine: InferenceEngine {
         self.capabilities = capabilities
         self.container = container
         self.perf = perf
+        self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
@@ -103,12 +107,26 @@ public struct MLXInferenceEngine: InferenceEngine {
                     }
                     let stream: AsyncStream<Generation>
                     if useMTP {
-                        // Native MTP self-speculative decoding, with whole-prefix cache reuse so a
-                        // repeated system prompt (the VS Code case) is prefilled once, not per turn.
+                        // Native MTP self-speculative decoding (single-sequence; can't batch), with
+                        // whole-prefix cache reuse so a repeated system prompt is prefilled once.
                         stream = try await Self.mtpStream(
                             container: container,
                             box: usePrefixCache ? promptCache : nil,
                             userInput: userInput, parameters: parameters)
+                    } else if await Self.modelIsBatchable(container) {
+                        // Continuous batching: concurrent plain requests decode together. Tokenize
+                        // the prompt, then submit to the shared batch engine.
+                        let boxed = SendableValueBox(userInput)
+                        let tokens = try await container.perform { context in
+                            try await context.processor.prepare(input: boxed.consume())
+                                .text.tokens.asArray(Int32.self)
+                        }
+                        let stopIds = await Self.stopTokenIds(container)
+                        stream = await batchEngine.submit(
+                            promptTokens: tokens,
+                            maxTokens: parameters.maxTokens ?? 2048,
+                            temperature: parameters.temperature,
+                            stopTokenIds: stopIds)
                     } else if usePrefixCache {
                         stream = try await Self.cachedStream(
                             container: container, box: promptCache,
@@ -174,6 +192,23 @@ public struct MLXInferenceEngine: InferenceEngine {
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// True if the loaded model supports batched (continuous) decoding.
+    static func modelIsBatchable(_ container: ModelContainer) async -> Bool {
+        await container.perform { context in context.model is BatchableModel }
+    }
+
+    /// The stop-token id set (model EOS + tokenizer EOS + extra EOS strings) for the batch engine.
+    static func stopTokenIds(_ container: ModelContainer) async -> Set<Int> {
+        await container.perform { context in
+            var ids = context.configuration.eosTokenIds
+            if let t = context.tokenizer.eosTokenId { ids.insert(t) }
+            for tok in context.configuration.extraEOSTokens {
+                if let id = context.tokenizer.convertTokenToId(tok) { ids.insert(id) }
+            }
+            return ids
         }
     }
 
@@ -286,7 +321,8 @@ public struct MLXInferenceEngine: InferenceEngine {
 }
 
 /// Minimal box to move a non-Sendable value into a `@Sendable` closure exactly once.
-private final class SendableValueBox<T>: @unchecked Sendable {
+/// Internal (not private) so `BatchGenerationEngine` in the same module can reuse it.
+final class SendableValueBox<T>: @unchecked Sendable {
     private var value: T?
     init(_ value: T) { self.value = value }
     func consume() -> T {

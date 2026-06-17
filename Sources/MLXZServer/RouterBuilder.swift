@@ -143,7 +143,9 @@ struct RouterBuilder {
                 return errorResponse(asAPIError(error))
             }
 
-            guard await gate.tryAcquire() else {
+            // Wait for a generation slot (FIFO) instead of rejecting — concurrent requests queue.
+            // Only a bounded, full wait queue returns busy (genuine overload).
+            guard await gate.acquire() else {
                 return errorResponse(.busy())
             }
 

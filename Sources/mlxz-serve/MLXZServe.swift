@@ -46,6 +46,12 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Bound MLX's GPU buffer cache to N MB (default 512). Prevents MLX hoarding multi-GB of scratch buffers next to a large model. 0 disables the cache.")
     var gpuCacheMb: Int = 512
 
+    @Option(name: .long, help: "Max concurrent requests decoded together in one batched forward pass (continuous batching) for GatedDeltaNet models. Default 8. Concurrent requests run together instead of being serialized/rejected. MTP models decode single-sequence and queue.")
+    var maxBatch: Int = 8
+
+    @Option(name: .long, help: "Max requests waiting for a generation slot before returning 429. Default 0 = unbounded (always queue, never reject).")
+    var maxQueue: Int = 0
+
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
@@ -72,7 +78,8 @@ struct MLXZServe: AsyncParsableCommand {
             maxKVSize: maxKvSize,
             prefixCache: prefixCache,
             useMTP: mtp,
-            gpuCacheLimitMB: gpuCacheMb
+            gpuCacheLimitMB: gpuCacheMb,
+            maxBatch: maxBatch
         )
         let manager = ModelManager(
             loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)
@@ -85,6 +92,8 @@ struct MLXZServe: AsyncParsableCommand {
         let embeddingManager = EmbeddingManager(loader: MLXEmbeddingLoader())
         let server = InferenceServer(
             manager: manager,
+            maxConcurrent: maxBatch,
+            maxWaiting: maxQueue,
             logger: logger,
             logSink: { line in logger.info("\(line)") },
             extraModelIDs: { localStore.installedModels().map(\.descriptor.repoID) },
