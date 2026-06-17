@@ -109,10 +109,25 @@ curl -s http://127.0.0.1:8088/v1/chat/completions -H 'Content-Type: application/
   requests share a long system prompt) + optional KV-cache quantization / max-KV-size for
   memory-bound large/MoE models (`--kv-bits`, `--max-kv-size`).
 
-Known limitation: MTP/speculative decoding is a present-but-inert seam — mlx-swift-lm 3.31.3 has no
-native single-model MTP, and its draft-model path can't host the main + draft models in one
-isolation domain (`any LanguageModel` is non-Sendable, per-model `ModelContainer` actors). So
-speculative requests use standard decoding (capability is still advertised). It becomes a one-file
-change when upstream lands MTP or a Sendable speculative entry point. Possible future work:
-prefix/KV-cache reuse across requests, multiple concurrent loaded models. See
-`.claude/plans/we-are-building-a-lovely-tiger.md`.
+### Native MTP speculative decoding
+
+mlxz uses a **local fork** of mlx-swift-lm at `../mlx-swift-lm-mtp` (a `.package(path:)` dependency)
+that adds native Qwen3.5/3.6 **multi-token-prediction** self-speculative decoding (ported from
+mlx-lm PR #990) into both the LLM and VLM backbones. The mlx-community MTP checkpoints are
+standalone *drafters* (the MTP head split into a ~240MB checkpoint) that pair with the full model:
+
+```bash
+# Full model + its MTP drafter → draft-model self-speculative decoding
+scripts/build-mlx.sh mlxz-serve
+mlxz-serve --model mlx-community/Qwen3.6-27B-4bit \
+           --mtp-draft mlx-community/Qwen3.6-27B-MTP-4bit
+```
+
+The drafter is downloaded and attached to the backbone's MTP head (sharing its embeddings/lm_head).
+Decoding drafts a token, verifies it in one backbone pass, and accepts via `min(1, p_target/p_draft)`
+rejection sampling, so output matches non-speculative decoding. Verified on Qwen3.6-27B: MTP greedy
+output is token-identical to the no-MTP baseline on short generations; ~1.12x decode speedup measured
+(higher on more predictable text). Toggle with `--mtp/--no-mtp`.
+
+Possible future work: deeper drafting (block_size > 1), prefix/KV-cache reuse with MTP, multiple
+concurrent loaded models. See `.claude/plans/we-are-building-a-lovely-tiger.md`.
