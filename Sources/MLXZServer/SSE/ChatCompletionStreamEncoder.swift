@@ -7,13 +7,15 @@ final class ChatCompletionStreamEncoder: SSEEventEncoder, @unchecked Sendable {
     private let id: String
     private let modelID: String
     private let created: Int
+    private let includeUsage: Bool
     private var sentRole = false
     private var toolCallIndex = 0
 
-    init(modelID: String) {
+    init(modelID: String, includeUsage: Bool = false) {
         self.id = "chatcmpl-\(OpenAIID.random())"
         self.modelID = modelID
         self.created = OpenAIID.timestamp()
+        self.includeUsage = includeUsage
     }
 
     func encode(_ event: GenerationEvent) throws -> [SSEFrame] {
@@ -60,8 +62,16 @@ final class ChatCompletionStreamEncoder: SSEEventEncoder, @unchecked Sendable {
             return [chunkFrame(delta: delta, finishReason: nil)]
 
         case .completed(let result):
-            // Final chunk with finish_reason and an empty delta.
-            return [chunkFrame(delta: .object([]), finishReason: result.finishReason.rawValue)]
+            // Final content chunk with finish_reason and an empty delta.
+            var frames = [chunkFrame(delta: .object([]), finishReason: result.finishReason.rawValue)]
+            // Per OpenAI: when stream_options.include_usage is set, follow with one extra chunk that
+            // has an empty `choices` array and a populated `usage`. VS Code Copilot reads this to
+            // drive its context-window % counter; without it the counter sits at 0%. All three token
+            // fields are required by Copilot's usage type-guard.
+            if includeUsage {
+                frames.append(usageFrame(result.usage))
+            }
+            return frames
         }
     }
 
@@ -81,6 +91,23 @@ final class ChatCompletionStreamEncoder: SSEEventEncoder, @unchecked Sendable {
             ("created", .int(created)),
             ("model", .string(modelID)),
             ("choices", .array([choice])),
+        ])
+        return SSEFrame(event: nil, data: chunk.jsonString)
+    }
+
+    /// The OpenAI-standard trailing usage chunk: empty `choices`, populated `usage`.
+    private func usageFrame(_ usage: TokenUsage) -> SSEFrame {
+        let chunk: OAIJSON = .object([
+            ("id", .string(id)),
+            ("object", .string("chat.completion.chunk")),
+            ("created", .int(created)),
+            ("model", .string(modelID)),
+            ("choices", .array([])),
+            ("usage", .object([
+                ("prompt_tokens", .int(usage.promptTokens)),
+                ("completion_tokens", .int(usage.completionTokens)),
+                ("total_tokens", .int(usage.totalTokens)),
+            ])),
         ])
         return SSEFrame(event: nil, data: chunk.jsonString)
     }

@@ -62,7 +62,7 @@ struct ChatCompletionsEndpoint: OpenAIEndpoint {
     }
 
     func makeStreamEncoder(for wire: ChatCompletionRequest, modelID: String) -> any SSEEventEncoder {
-        ChatCompletionStreamEncoder(modelID: modelID)
+        ChatCompletionStreamEncoder(modelID: modelID, includeUsage: wire.includeUsage)
     }
 
     func encodeNonStreaming(_ result: AggregatedResult, wire: ChatCompletionRequest, modelID: String) throws -> Data {

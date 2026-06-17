@@ -14,6 +14,7 @@ struct ChatCompletionRequest: Decodable, Sendable {
     var maxCompletionTokens: Int?
     var stop: StopValue?
     var stream: Bool?
+    var streamOptions: StreamOptions?
     var tools: [WireTool]?
     var seed: UInt64?
 
@@ -22,9 +23,22 @@ struct ChatCompletionRequest: Decodable, Sendable {
         case topP = "top_p"
         case maxTokens = "max_tokens"
         case maxCompletionTokens = "max_completion_tokens"
+        case streamOptions = "stream_options"
     }
 
     var isStreaming: Bool { stream ?? false }
+    /// OpenAI `stream_options.include_usage`: when true, emit a final `choices:[]` chunk carrying
+    /// `usage`. VS Code Copilot sets this and uses the reported `prompt_tokens` to drive its
+    /// context-window % counter.
+    var includeUsage: Bool { streamOptions?.includeUsage ?? false }
+}
+
+/// OpenAI `stream_options` object.
+struct StreamOptions: Decodable, Sendable {
+    var includeUsage: Bool?
+    enum CodingKeys: String, CodingKey {
+        case includeUsage = "include_usage"
+    }
 }
 
 /// `stop` may be a single string or an array of strings.
