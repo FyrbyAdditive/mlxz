@@ -6,11 +6,18 @@ public actor ModelManager {
     public enum State: Sendable {
         case empty
         case loading(ModelDescriptor, fraction: Double?)
-        case loaded(ModelDescriptor)
+        /// Loaded model, plus an attached MTP drafter repo id (when one was attached).
+        case loaded(ModelDescriptor, drafterID: String?)
         case failed(ModelDescriptor, message: String)
 
         public var loadedDescriptor: ModelDescriptor? {
-            if case let .loaded(d) = self { return d }
+            if case let .loaded(d, _) = self { return d }
+            return nil
+        }
+
+        /// The repo id of the attached MTP drafter, if any.
+        public var attachedDrafterID: String? {
+            if case let .loaded(_, drafterID) = self { return drafterID }
             return nil
         }
     }
@@ -32,9 +39,10 @@ public actor ModelManager {
     /// The currently loaded engine, if any. The server reads this per request.
     public func currentEngine() -> (any InferenceEngine)? { engine }
 
-    /// Load a model, replacing any currently loaded one. Idempotent for an already-loaded descriptor.
-    public func load(_ descriptor: ModelDescriptor) async throws {
-        if case let .loaded(current) = state, current == descriptor {
+    /// Load a model, replacing any currently loaded one. Idempotent for an already-loaded
+    /// descriptor with the same drafter. `draftModelID` attaches a matching MTP drafter.
+    public func load(_ descriptor: ModelDescriptor, draftModelID: String? = nil) async throws {
+        if case let .loaded(current, drafter) = state, current == descriptor, drafter == draftModelID {
             return
         }
         // Free the old model before loading a new one to avoid double memory pressure.
@@ -44,12 +52,13 @@ public actor ModelManager {
         logger.info("loading model", metadata: ["model": .string(descriptor.id)])
 
         do {
-            let loaded = try await loader.load(descriptor) { [weak self] progress in
+            let loaded = try await loader.load(descriptor, draftModelID: draftModelID) {
+                [weak self] progress in
                 guard let self else { return }
                 Task { await self.update(.loading(descriptor, fraction: progress.fraction)) }
             }
             self.engine = loaded
-            update(.loaded(descriptor))
+            update(.loaded(descriptor, drafterID: draftModelID))
             logger.info("model loaded", metadata: ["model": .string(descriptor.id)])
         } catch {
             update(.failed(descriptor, message: String(describing: error)))

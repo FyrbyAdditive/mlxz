@@ -81,7 +81,8 @@ struct ServerControlView: View {
         switch model.modelState {
         case .empty: "none loaded"
         case .loading(let d, let f): "loading \(d.displayName) \(f.map { "\(Int($0 * 100))%" } ?? "")"
-        case .loaded(let d): d.displayName
+        case .loaded(let d, let drafter):
+            drafter != nil ? "\(d.displayName) + MTP drafter" : d.displayName
         case .failed(_, let msg): "failed: \(msg)"
         }
     }

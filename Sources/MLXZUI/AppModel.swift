@@ -119,13 +119,26 @@ public final class AppModel {
     // MARK: - Model lifecycle
 
     public func load(_ descriptor: ModelDescriptor) async {
-        logStore.append("Loading \(descriptor.repoID)…")
+        // Auto-attach a matching installed MTP drafter (self-speculative decoding) if present.
+        let drafterID = matchingInstalledDrafter(for: descriptor.repoID)
+        if let drafterID {
+            logStore.append("Loading \(descriptor.repoID) + MTP drafter \(drafterID)…")
+        } else {
+            logStore.append("Loading \(descriptor.repoID)…")
+        }
         do {
-            try await manager.load(descriptor)
-            logStore.append("Loaded \(descriptor.repoID)")
+            try await manager.load(descriptor, draftModelID: drafterID)
+            logStore.append("Loaded \(descriptor.repoID)\(drafterID != nil ? " (MTP attached)" : "")")
         } catch {
             logStore.append("Load failed: \(error)")
         }
+    }
+
+    /// The repo id of an installed MTP drafter that pairs with `baseRepoID`, if one is present.
+    public func matchingInstalledDrafter(for baseRepoID: String) -> String? {
+        guard !DrafterPairing.isDrafter(baseRepoID) else { return nil }
+        let expected = DrafterPairing.drafterRepoID(forBase: baseRepoID)
+        return installedModels().first { $0.descriptor.repoID == expected }?.descriptor.repoID
     }
 
     public func unload() async {

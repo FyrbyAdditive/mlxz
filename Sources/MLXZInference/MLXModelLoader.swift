@@ -14,18 +14,20 @@ import Tokenizers
 /// MoE (Qwen3.6-35B-A3B), and VLMs all load through this one path.
 public struct MLXModelLoader: ModelLoading {
     private let perf: EnginePerfOptions
-    /// Optional standalone MTP drafter repo id to attach to the backbone (draft-model MTP).
-    private let draftModelID: String?
+    /// Default drafter (e.g. from `mlxz-serve --mtp-draft`). A per-load `draftModelID` overrides it.
+    private let defaultDraftModelID: String?
 
     public init(perf: EnginePerfOptions = .default, draftModelID: String? = nil) {
         self.perf = perf
-        self.draftModelID = draftModelID
+        self.defaultDraftModelID = draftModelID
     }
 
     public func load(
         _ descriptor: ModelDescriptor,
+        draftModelID: String?,
         progress: @escaping @Sendable (LoadProgress) -> Void
     ) async throws -> any InferenceEngine {
+        let draftModelID = draftModelID ?? defaultDraftModelID
         // A standalone MTP drafter checkpoint (e.g. "…-MTP-4bit") contains only the MTP head, not a
         // full backbone — it can't be loaded as a primary model, only attached to one via
         // `draftModelID`. Reject it early with a clear message instead of failing deep in MLX.

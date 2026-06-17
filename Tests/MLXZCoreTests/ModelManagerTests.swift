@@ -17,6 +17,19 @@ import Testing
         #expect(await loader.requestedDescriptors == [descriptor])
     }
 
+    @Test func attachesDrafterAndTracksIt() async throws {
+        let loader = MockModelLoading()
+        let manager = ModelManager(loader: loader)
+        let base = ModelDescriptor(repoID: "mlx-community/Qwen3.6-27B-4bit")
+        let drafter = "mlx-community/Qwen3.6-27B-MTP-4bit"
+
+        try await manager.load(base, draftModelID: drafter)
+
+        #expect(await manager.state.loadedDescriptor == base)
+        #expect(await manager.state.attachedDrafterID == drafter)
+        #expect(await loader.requestedDrafters == [drafter])
+    }
+
     @Test func loadingSameModelTwiceIsIdempotent() async throws {
         let loader = MockModelLoading()
         let manager = ModelManager(loader: loader)
@@ -72,6 +85,7 @@ private struct ThrowingLoader: ModelLoading {
     struct Boom: Error {}
     func load(
         _ descriptor: ModelDescriptor,
+        draftModelID: String?,
         progress: @escaping @Sendable (LoadProgress) -> Void
     ) async throws -> any InferenceEngine {
         throw Boom()

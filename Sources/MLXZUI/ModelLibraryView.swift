@@ -31,16 +31,16 @@ struct ModelLibraryView: View {
                 if installed.isEmpty {
                     Text("No models downloaded yet.").foregroundStyle(.secondary)
                 }
-                ForEach(installed) { m in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(m.displayName).font(.body)
-                            Text(byteString(m.sizeBytes)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        CapabilityBadges(capabilities: m.capabilities, loaded: isLoaded(m.descriptor.repoID))
-                        Spacer()
-                        loadControl(for: m.descriptor.repoID)
+                ForEach(baseModels) { m in
+                    installedRow(m, indented: false)
+                    // Nest a matching installed drafter directly under its base model.
+                    if let drafter = installedDrafter(forBase: m.descriptor.repoID) {
+                        installedRow(drafter, indented: true)
                     }
+                }
+                // Orphan drafters whose base model isn't installed (shown so they're not hidden).
+                ForEach(orphanDrafters) { d in
+                    installedRow(d, indented: false)
                 }
             }
 
@@ -83,21 +83,72 @@ struct ModelLibraryView: View {
         return false
     }
 
-    /// A standalone MTP drafter (e.g. "…-MTP-4bit") holds only the speculative head and can't be
-    /// loaded as a primary model — it must be attached to a base model instead.
-    private func isDrafter(_ repoID: String) -> Bool {
-        let name = (repoID.split(separator: "/").last.map(String.init) ?? repoID).lowercased()
-        return name.contains("-mtp")
+    private func isDrafter(_ repoID: String) -> Bool { DrafterPairing.isDrafter(repoID) }
+
+    /// Whether `repoID` is the MTP drafter attached to the currently-loaded model.
+    private func isAttachedDrafter(_ repoID: String) -> Bool {
+        model.modelState.attachedDrafterID == repoID
     }
 
-    /// Load / Loading… / Unload control reflecting the model lifecycle state.
+    // MARK: Installed-list grouping
+
+    /// Installed models that are NOT drafters (base / standalone models).
+    private var baseModels: [InstalledModel] {
+        installed.filter { !isDrafter($0.descriptor.repoID) }
+    }
+
+    /// The installed drafter that pairs with `baseRepoID`, if present.
+    private func installedDrafter(forBase baseRepoID: String) -> InstalledModel? {
+        let expected = DrafterPairing.drafterRepoID(forBase: baseRepoID)
+        return installed.first { $0.descriptor.repoID == expected }
+    }
+
+    /// Drafters whose base model is not installed — shown standalone so they aren't hidden.
+    private var orphanDrafters: [InstalledModel] {
+        let baseIDs = Set(baseModels.map(\.descriptor.repoID))
+        return installed.filter {
+            isDrafter($0.descriptor.repoID)
+                && DrafterPairing.baseRepoID(forDrafter: $0.descriptor.repoID).map {
+                    !baseIDs.contains($0)
+                } ?? true
+        }
+    }
+
+    /// One installed-model row; `indented` nests a drafter under its base model.
+    @ViewBuilder
+    private func installedRow(_ m: InstalledModel, indented: Bool) -> some View {
+        HStack {
+            if indented {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading) {
+                Text(m.displayName).font(.body)
+                Text(byteString(m.sizeBytes)).font(.caption).foregroundStyle(.secondary)
+            }
+            CapabilityBadges(capabilities: m.capabilities, loaded: isLoaded(m.descriptor.repoID))
+            Spacer()
+            loadControl(for: m.descriptor.repoID)
+        }
+        .padding(.leading, indented ? 16 : 0)
+    }
+
+    /// Load / Loading… / Unload (base models) or attachment status (drafters).
     @ViewBuilder
     private func loadControl(for repoID: String) -> some View {
         if isDrafter(repoID) {
-            Text("drafter").font(.caption2)
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .foregroundStyle(.secondary)
-                .help("MTP drafter — attach to a base model rather than loading directly.")
+            if isAttachedDrafter(repoID) {
+                Text("Attached")
+                    .font(.caption2).padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.green.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.green)
+                    .help("Attached to the loaded model for MTP speculative decoding.")
+            } else {
+                Text("drafter").font(.caption2)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .foregroundStyle(.secondary)
+                    .help("MTP drafter — auto-attaches when its base model is loaded.")
+            }
         } else if isLoaded(repoID) {
             Button("Unload", role: .destructive) { Task { await model.unload() } }
         } else if isLoading(repoID) {

@@ -56,6 +56,7 @@ public struct MockInferenceEngine: InferenceEngine {
 /// A `ModelLoading` that returns a preconfigured engine, recording the descriptor it was asked for.
 public actor MockModelLoading: ModelLoading {
     public private(set) var requestedDescriptors: [ModelDescriptor] = []
+    public private(set) var requestedDrafters: [String?] = []
     private let makeEngine: @Sendable (ModelDescriptor) -> any InferenceEngine
     private let emitProgress: Bool
 
@@ -71,9 +72,11 @@ public actor MockModelLoading: ModelLoading {
 
     public func load(
         _ descriptor: ModelDescriptor,
+        draftModelID: String?,
         progress: @escaping @Sendable (LoadProgress) -> Void
     ) async throws -> any InferenceEngine {
         requestedDescriptors.append(descriptor)
+        requestedDrafters.append(draftModelID)
         if emitProgress {
             progress(LoadProgress(fraction: 0.5, detail: "downloading"))
             progress(LoadProgress(fraction: 1.0, detail: "ready"))
