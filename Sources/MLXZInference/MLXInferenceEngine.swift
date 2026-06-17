@@ -28,6 +28,9 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// Continuous-batching engine for plain (non-MTP) requests, so concurrent requests decode
     /// together instead of being serialized/rejected. Built once, shared across requests.
     private let batchEngine: BatchGenerationEngine
+    /// Fair scheduler for MTP requests (interleaves decode steps so a short request doesn't wait for
+    /// a long one). Built once, shared across requests.
+    private let mtpScheduler: MTPScheduler
     /// Whether the loaded model conforms to `BatchableModel` (supports continuous batching).
     /// Captured once at load to avoid an async probe per request.
     private let isBatchable: Bool
@@ -52,11 +55,12 @@ public struct MLXInferenceEngine: InferenceEngine {
         self.promptCache = PromptCacheBox(
             prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0)
         self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
-        // MTP-capable models decode single-sequence (the MTP path can't batch) and reuse the shared
-        // prefix cache — they must serialize. Non-batchable models also serialize. Only a batchable,
-        // non-MTP model uses the batch engine and wants real concurrency.
+        self.mtpScheduler = MTPScheduler(container: container)
+        // Concurrency the gate admits. MTP requests go to the fair scheduler (which interleaves
+        // decode steps), and batchable non-MTP requests go to the batch engine — both want N
+        // requests admitted concurrently. A plain non-batchable model still serializes at 1.
         let useMTPModel = perf.useMTP && capabilities.contains(.speculative)
-        self.maxConcurrency = (useMTPModel || !isBatchable) ? 1 : max(1, perf.maxBatch)
+        self.maxConcurrency = (useMTPModel || isBatchable) ? max(1, perf.maxBatch) : 1
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
@@ -126,12 +130,13 @@ public struct MLXInferenceEngine: InferenceEngine {
                     }
                     let stream: AsyncStream<Generation>
                     if useMTP {
-                        // Native MTP self-speculative decoding (single-sequence; can't batch), with
-                        // whole-prefix cache reuse so a repeated system prompt is prefilled once.
-                        stream = try await Self.mtpStream(
-                            container: container,
-                            box: usePrefixCache ? promptCache : nil,
-                            userInput: userInput, parameters: parameters)
+                        // Native MTP self-speculative decoding via the fair scheduler: requests
+                        // interleave one decode step at a time, so a short request doesn't wait for a
+                        // long one to finish (MTP can't batch, but it can be fair). Whole-prefix cache
+                        // reuse via the LRU on the PromptCacheBox.
+                        stream = await mtpScheduler.submit(
+                            userInput: userInput, parameters: parameters,
+                            box: usePrefixCache ? promptCache : nil)
                     } else if isBatchable {
                         // Continuous batching: concurrent plain requests decode together. Tokenize
                         // the prompt, then submit to the shared batch engine.
@@ -223,80 +228,6 @@ public struct MLXInferenceEngine: InferenceEngine {
                 if let id = context.tokenizer.convertTokenToId(tok) { ids.insert(id) }
             }
             return ids
-        }
-    }
-
-    /// Build a generation stream using the model's native MTP head for self-speculative decoding.
-    /// Runs inside `container.perform` because the model/caches are non-Sendable.
-    static func mtpStream(
-        container: ModelContainer,
-        box: PromptCacheBox?,
-        userInput: consuming UserInput,
-        parameters: GenerateParameters
-    ) async throws -> AsyncStream<Generation> {
-        let boxedInput = SendableValueBox(userInput)
-        // A FRESH result per request — `mtpGenerate` populates it on clean completion; we then add it
-        // to the LRU (multi-slot, so an unrelated prompt can't evict a valuable snapshot).
-        let result = MTPCacheResult()
-        let boxedBox = SendableValueBox(box)
-
-        let inner = try await container.perform { context in
-            let cacheBox = boxedBox.consume()
-            let lru = cacheBox?.snapshotLRU
-            let lmInput = try await context.processor.prepare(input: boxedInput.consume())
-            let newTokens = lmInput.text.tokens.asArray(Int32.self)
-
-            // Snapshot-and-restore prefix cache (SSM-safe). A snapshot encodes EXACTLY a stable
-            // prefix (no generated tokens), so restoring it and prefilling only the new suffix is
-            // sound even with the hybrid backbone's non-rewindable SSM layers.
-            // 1) Restore: pick the LONGEST cached snapshot that is an exact prefix of this prompt.
-            //    Restore is robust to interference — even if an intervening request changed
-            //    `lastPromptTokens`, the system-prompt snapshot still lives in the LRU.
-            var restore: (model: [KVCache], mtp: [KVCache])? = nil
-            var restoreCount = 0
-            if let match = lru?.bestMatch(for: newTokens) {
-                restore = (match.modelCache, match.mtpCache)
-                restoreCount = match.tokens.count
-            }
-
-            // 2) Snapshot point for a FUTURE request. Snapshot near the END of THIS prompt
-            //    (promptLen - margin), so the very next request — which in agentic/chat use is this
-            //    prompt plus a little more — can reuse almost all of it. Critically this fires even on
-            //    the FIRST request (no previous prompt needed), eliminating the old "one turn behind"
-            //    miss where request #2 re-prefilled ~28k tokens (~40s) it could have reused. The
-            //    margin leaves a non-empty suffix (reuseCount requires snapshot strictly shorter than
-            //    the new prompt) and absorbs small tail differences. Never below what we restored.
-            let snapshotMargin = 256
-            let snapshotAt = max(restoreCount, newTokens.count - snapshotMargin)
-
-            return try mtpGenerate(
-                input: lmInput, parameters: parameters, context: context,
-                restore: restore, restoreCount: restoreCount, snapshotAt: snapshotAt, result: result)
-        }
-
-        let lru = box?.snapshotLRU
-
-        // Wrap the stream so that on clean completion we add the freshly-captured snapshot to the
-        // LRU (additive — never evicts a better snapshot for an unrelated short prompt). The insert
-        // touches non-Sendable KVCache, so it runs inside `container.perform`.
-        let resultBox = SendableValueBox((result, lru))
-        return AsyncStream { continuation in
-            let task = Task {
-                for await event in inner { continuation.yield(event) }
-                let (res, lruOpt) = resultBox.consume()
-                if let lruRef = lruOpt, let model = res.snapshotModelCache,
-                    let mtp = res.snapshotMtpCache, let tokens = res.snapshotTokens
-                {
-                    // Box the non-Sendable cache arrays to move them into the perform closure once.
-                    let payload = SendableValueBox((tokens, model, mtp, lruRef))
-                    await container.perform { _ in
-                        let (t, m, h, l) = payload.consume()
-                        l.insert(tokens: t, modelCache: m, mtpCache: h)
-                    }
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

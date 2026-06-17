@@ -31,6 +31,9 @@ final class SnapshotLRU: @unchecked Sendable {
 
     var isEmpty: Bool { entries.isEmpty }
 
+    /// Number of cached snapshots.
+    var count: Int { entries.count }
+
     /// Drop all cached snapshots (e.g. on model unload).
     func clear() { entries.removeAll() }
 
