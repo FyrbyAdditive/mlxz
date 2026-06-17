@@ -63,9 +63,11 @@ public struct MLXModelLoader: ModelLoading {
         }
 
         // Authoritative vision detection: VLM checkpoints load as `VLMModel` (regardless of repo
-        // name), so query the loaded model rather than guessing from the id.
-        let isVisionModel = await container.perform { context in
-            context.model is any VLMModel
+        // name), so query the loaded model rather than guessing from the id. Also probe whether the
+        // model supports continuous batching (BatchableModel) — captured once here so the engine
+        // doesn't re-probe per request.
+        let (isVisionModel, isBatchable) = await container.perform { context in
+            (context.model is any VLMModel, context.model is BatchableModel)
         }
         var capabilities = ModelCapabilityDetector.detect(
             repoID: descriptor.repoID, hasVisionConfig: isVisionModel)
@@ -93,7 +95,8 @@ public struct MLXModelLoader: ModelLoading {
             descriptor: descriptor,
             capabilities: capabilities,
             container: container,
-            perf: perf
+            perf: perf,
+            isBatchable: isBatchable
         )
     }
 

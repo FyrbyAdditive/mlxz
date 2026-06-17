@@ -53,6 +53,28 @@ import Testing
         for _ in waiters { await gate.release() }
         for w in waiters { #expect(await w.value) }
     }
+
+    /// The per-call `limit` (from the engine's maxConcurrency) overrides the gate default. With
+    /// limit=1 (single-sequence/MTP model), a 2nd concurrent acquire must WAIT — this is what keeps
+    /// the shared prefix cache from being clobbered by a concurrent request.
+    @Test func perCallLimitOfOneSerializes() async {
+        let gate = GenerationGate(maxConcurrent: 8)  // default would allow 8…
+        #expect(await gate.acquire(limit: 1))         // …but limit:1 takes the only slot
+
+        let waiter = Task { await gate.acquire(limit: 1) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        // The waiter must still be parked (not completed) — proves serialization.
+        #expect(!waiter.isCancelled)
+        await gate.release()
+        #expect(await waiter.value)  // released → proceeds
+    }
+
+    /// With limit=N (batchable model), N requests acquire concurrently without waiting.
+    @Test func perCallLimitAllowsConcurrency() async {
+        let gate = GenerationGate(maxConcurrent: 1)  // default 1…
+        // …but limit:4 lets 4 acquire immediately.
+        for _ in 0 ..< 4 { #expect(await gate.acquire(limit: 4)) }
+    }
 }
 
 /// Tiny date stand-in (avoids importing Foundation just for timing in a logic test).

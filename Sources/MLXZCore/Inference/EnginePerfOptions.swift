@@ -33,6 +33,13 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// serialized/rejected. 1 effectively serializes. Default 8.
     public var maxBatch: Int
 
+    /// Number of prefix-snapshot slots in the MTP cross-request cache (LRU). Multi-slot so an
+    /// unrelated request (e.g. an IDE's title-generation between chat turns) can't evict a valuable
+    /// system-prompt snapshot. 1 = old single-slot behavior; 0 = disable cross-request reuse. Each
+    /// slot holds a full KV snapshot for its prefix (can be hundreds of MB on large models), so keep
+    /// this modest. Default 4. Only used when `prefixCache` is true.
+    public var prefixCacheSlots: Int
+
     public init(
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
@@ -41,7 +48,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         prefixCache: Bool = true,
         useMTP: Bool = true,
         gpuCacheLimitMB: Int? = 512,
-        maxBatch: Int = 8
+        maxBatch: Int = 8,
+        prefixCacheSlots: Int = 4
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
@@ -51,6 +59,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.useMTP = useMTP
         self.gpuCacheLimitMB = gpuCacheLimitMB
         self.maxBatch = maxBatch
+        self.prefixCacheSlots = prefixCacheSlots
     }
 
     public static let `default` = EnginePerfOptions()

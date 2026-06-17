@@ -52,6 +52,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Max requests waiting for a generation slot before returning 429. Default 0 = unbounded (always queue, never reject).")
     var maxQueue: Int = 0
 
+    @Option(name: .long, help: "Prefix-snapshot cache slots (LRU) for cross-request reuse on the MTP path. Multi-slot so an unrelated request (e.g. an IDE's title-generation) can't evict a valuable system-prompt snapshot. Each slot holds a full KV snapshot (can be hundreds of MB). Default 4; 0 disables reuse.")
+    var prefixCacheSlots: Int = 4
+
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
@@ -79,7 +82,8 @@ struct MLXZServe: AsyncParsableCommand {
             prefixCache: prefixCache,
             useMTP: mtp,
             gpuCacheLimitMB: gpuCacheMb,
-            maxBatch: maxBatch
+            maxBatch: maxBatch,
+            prefixCacheSlots: prefixCacheSlots
         )
         let manager = ModelManager(
             loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)

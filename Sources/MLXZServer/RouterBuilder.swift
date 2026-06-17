@@ -144,8 +144,10 @@ struct RouterBuilder {
             }
 
             // Wait for a generation slot (FIFO) instead of rejecting — concurrent requests queue.
+            // The limit is the current engine's `maxConcurrency`: 1 for single-sequence models (so
+            // they serialize and the shared prefix cache holds), `maxBatch` for batchable models.
             // Only a bounded, full wait queue returns busy (genuine overload).
-            guard await gate.acquire() else {
+            guard await gate.acquire(limit: engine.maxConcurrency) else {
                 return errorResponse(.busy())
             }
 

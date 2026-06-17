@@ -19,25 +19,44 @@ public struct MLXInferenceEngine: InferenceEngine {
     public let capabilities: ModelCapabilities
 
     private let container: ModelContainer
-    /// Persistent prefix cache, reused across requests. Mutated only inside `container.perform`,
-    /// where the GenerationGate already serializes access.
-    private let promptCache = PromptCacheBox()
+    /// Persistent prefix cache, reused across requests on the single-sequence paths (MTP /
+    /// cachedStream). Mutated only inside `container.perform`; the GenerationGate serializes those
+    /// paths (`maxConcurrency == 1`), so concurrent requests can't clobber each other's cached
+    /// prefix — they queue. (Batchable models don't touch this box.)
+    private let promptCache: PromptCacheBox
     private let perf: EnginePerfOptions
     /// Continuous-batching engine for plain (non-MTP) requests, so concurrent requests decode
     /// together instead of being serialized/rejected. Built once, shared across requests.
     private let batchEngine: BatchGenerationEngine
+    /// Whether the loaded model conforms to `BatchableModel` (supports continuous batching).
+    /// Captured once at load to avoid an async probe per request.
+    private let isBatchable: Bool
+
+    /// Concurrency limit the gate should apply for this model: serialize (1) the single-sequence
+    /// shared-cache paths so the prefix cache holds; allow `maxBatch` only when the batch engine is
+    /// actually used (batchable AND not running MTP). Computed once from load-time facts.
+    public let maxConcurrency: Int
 
     public init(
         descriptor: ModelDescriptor,
         capabilities: ModelCapabilities,
         container: ModelContainer,
-        perf: EnginePerfOptions = .default
+        perf: EnginePerfOptions = .default,
+        isBatchable: Bool = false
     ) {
         self.descriptor = descriptor
         self.capabilities = capabilities
         self.container = container
         self.perf = perf
+        self.isBatchable = isBatchable
+        self.promptCache = PromptCacheBox(
+            prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0)
         self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
+        // MTP-capable models decode single-sequence (the MTP path can't batch) and reuse the shared
+        // prefix cache — they must serialize. Non-batchable models also serialize. Only a batchable,
+        // non-MTP model uses the batch engine and wants real concurrency.
+        let useMTPModel = perf.useMTP && capabilities.contains(.speculative)
+        self.maxConcurrency = (useMTPModel || !isBatchable) ? 1 : max(1, perf.maxBatch)
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
@@ -113,7 +132,7 @@ public struct MLXInferenceEngine: InferenceEngine {
                             container: container,
                             box: usePrefixCache ? promptCache : nil,
                             userInput: userInput, parameters: parameters)
-                    } else if await Self.modelIsBatchable(container) {
+                    } else if isBatchable {
                         // Continuous batching: concurrent plain requests decode together. Tokenize
                         // the prompt, then submit to the shared batch engine.
                         let boxed = SendableValueBox(userInput)
@@ -195,11 +214,6 @@ public struct MLXInferenceEngine: InferenceEngine {
         }
     }
 
-    /// True if the loaded model supports batched (continuous) decoding.
-    static func modelIsBatchable(_ container: ModelContainer) async -> Bool {
-        await container.perform { context in context.model is BatchableModel }
-    }
-
     /// The stop-token id set (model EOS + tokenizer EOS + extra EOS strings) for the batch engine.
     static func stopTokenIds(_ container: ModelContainer) async -> Set<Int> {
         await container.perform { context in
@@ -221,46 +235,71 @@ public struct MLXInferenceEngine: InferenceEngine {
         parameters: GenerateParameters
     ) async throws -> AsyncStream<Generation> {
         let boxedInput = SendableValueBox(userInput)
-        return try await container.perform { context in
+        // A FRESH result per request — `mtpGenerate` populates it on clean completion; we then add it
+        // to the LRU (multi-slot, so an unrelated prompt can't evict a valuable snapshot).
+        let result = MTPCacheResult()
+        let boxedBox = SendableValueBox(box)
+
+        let inner = try await container.perform { context in
+            let cacheBox = boxedBox.consume()
+            let lru = cacheBox?.snapshotLRU
             let lmInput = try await context.processor.prepare(input: boxedInput.consume())
             let newTokens = lmInput.text.tokens.asArray(Int32.self)
 
             // Snapshot-and-restore prefix cache (SSM-safe). A snapshot encodes EXACTLY a stable
             // prefix (no generated tokens), so restoring it and prefilling only the new suffix is
-            // sound even with the hybrid backbone's non-rewindable SSM layers. The recurring stable
-            // prefix is a chat's constant system prompt; we snapshot it at the point it overlaps the
-            // previous prompt and reuse it on later turns. The MTPCacheResult is the persistent
-            // store: the SAME instance every request, so its snapshot survives across calls.
-            let store = box?.mtpResult
-
-            // 1) Restore: if a stored snapshot is a strict prefix of this prompt, reuse it.
+            // sound even with the hybrid backbone's non-rewindable SSM layers.
+            // 1) Restore: pick the LONGEST cached snapshot that is an exact prefix of this prompt.
+            //    Restore is robust to interference — even if an intervening request changed
+            //    `lastPromptTokens`, the system-prompt snapshot still lives in the LRU.
             var restore: (model: [KVCache], mtp: [KVCache])? = nil
             var restoreCount = 0
-            if let store, let m = store.snapshotModelCache, let h = store.snapshotMtpCache,
-                let snapTokens = store.snapshotTokens
-            {
-                let n = MTPCacheReuse.reuseCount(snapshotTokens: snapTokens, newTokens: newTokens)
-                if n > 0 {
-                    restore = (m, h)
-                    restoreCount = n
-                }
+            if let match = lru?.bestMatch(for: newTokens) {
+                restore = (match.modelCache, match.mtpCache)
+                restoreCount = match.tokens.count
             }
 
-            // 2) Snapshot point: the prefix this prompt shares with the previous one (the stable
-            // region likely to recur). Capture it during this prefill for the NEXT request.
-            let snapshotAt = MTPCacheReuse.snapshotPoint(
-                previousTokens: store?.promptTokens ?? [], currentTokens: newTokens)
+            // 2) Snapshot point for a FUTURE request: the prefix this prompt shares with the PREVIOUS
+            //    prompt (the recurring stable region). Fall back to the matched prefix length so we
+            //    re-snapshot at least what we restored (keeps the snapshot fresh across turns).
+            let reference = cacheBox?.lastPromptTokens ?? []
+            let snapshotAt = max(
+                MTPCacheReuse.snapshotPoint(previousTokens: reference, currentTokens: newTokens),
+                restoreCount)
 
-            // Invalidate the stored snapshot up front: mtpGenerate refills `store` ONLY on clean
-            // completion, so a cancelled/errored run leaves no stale snapshot for the next request.
-            store?.snapshotModelCache = nil
-            store?.snapshotMtpCache = nil
-            store?.snapshotTokens = nil
-            store?.promptTokens = nil
+            // Record this prompt as the reference for the next request's snapshot point.
+            cacheBox?.lastPromptTokens = newTokens
 
             return try mtpGenerate(
                 input: lmInput, parameters: parameters, context: context,
-                restore: restore, restoreCount: restoreCount, snapshotAt: snapshotAt, result: store)
+                restore: restore, restoreCount: restoreCount, snapshotAt: snapshotAt, result: result)
+        }
+
+        let lru = box?.snapshotLRU
+
+        guard let lru else { return inner }
+
+        // Wrap the stream so that on clean completion we add the freshly-captured snapshot to the
+        // LRU (additive — never evicts a better snapshot for an unrelated short prompt). The insert
+        // touches non-Sendable KVCache, so it runs inside `container.perform`.
+        let resultBox = SendableValueBox((result, lru))
+        return AsyncStream { continuation in
+            let task = Task {
+                for await event in inner { continuation.yield(event) }
+                let (res, lruRef) = resultBox.consume()
+                if let model = res.snapshotModelCache, let mtp = res.snapshotMtpCache,
+                    let tokens = res.snapshotTokens
+                {
+                    // Box the non-Sendable cache arrays to move them into the perform closure once.
+                    let payload = SendableValueBox((tokens, model, mtp, lruRef))
+                    await container.perform { _ in
+                        let (t, m, h, l) = payload.consume()
+                        l.insert(tokens: t, modelCache: m, mtpCache: h)
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

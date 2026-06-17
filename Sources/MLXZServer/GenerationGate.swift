@@ -11,19 +11,23 @@ import Foundation
 /// for the single-sequence MTP path it serializes (maxConcurrent 1) but waits instead of rejecting.
 actor GenerationGate {
     private var active = 0
-    private let maxConcurrent: Int
+    private let defaultLimit: Int
     private let maxWaiting: Int
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     init(maxConcurrent: Int = 1, maxWaiting: Int = 0) {
-        self.maxConcurrent = max(1, maxConcurrent)
+        self.defaultLimit = max(1, maxConcurrent)
         self.maxWaiting = maxWaiting
     }
 
-    /// Acquire a slot, waiting (FIFO) if at capacity. Returns false only when the wait queue is
-    /// bounded and full (genuine overload) — the sole remaining busy path.
-    func acquire() async -> Bool {
-        if active < maxConcurrent {
+    /// Acquire a slot, waiting (FIFO) if at capacity. The effective `limit` is supplied per call by
+    /// the caller from the current engine's `maxConcurrency` — `1` serializes single-sequence /
+    /// shared-prefix-cache models (so concurrent requests queue and can't clobber the cache), while
+    /// a batchable model passes its `maxBatch` so requests reach the batch engine concurrently.
+    /// Returns false only when the wait queue is bounded and full (genuine overload).
+    func acquire(limit: Int? = nil) async -> Bool {
+        let effectiveLimit = max(1, limit ?? defaultLimit)
+        if active < effectiveLimit {
             active += 1
             return true
         }
