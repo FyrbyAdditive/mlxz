@@ -67,4 +67,8 @@ public enum MLXRuntime {
     /// Reset the peak-memory high-water mark (call before a measured run). The `Memory.peakMemory`
     /// setter ignores its value and resets the high-water mark.
     public static func resetPeakMemory() { MLX.Memory.peakMemory = 0 }
+
+    /// Optionally cap MLX memory (soft back-pressure: malloc waits past the limit, it does not hard
+    /// error). Used as a guard rail while testing experimental kernels. nil = leave the default.
+    public static func setMemoryLimitMB(_ mb: Int) { MLX.Memory.memoryLimit = mb * 1024 * 1024 }
 }

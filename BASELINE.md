@@ -51,7 +51,8 @@ Notes:
 | 2 | GPU profiling gate | decode `unaccounted ≈ 0 ms` (−0.9 ms, noise) → no dispatch overhead; cold prefill 14.8 s / 12k tok = matmul-bound; MoE/MLP already fused (`SwitchGLU`/`quantizedMatmul`, `scaledDotProductAttention`), only glue is `silu*` (negligible) | **gate NOT met** — decode & prefill are matmul/bandwidth-bound with ~0% fusible/dispatch headroom. |
 | 3 | mx.compile sub-block | not pursued | **dropped** — Phase 2 gate (>10% fusible/dispatch share) not met; documented dead end. |
 | K1 | bd=256 fused steel attention (gate relax) | 24k −6% / 48k +2–5% (regression); root cause: 4-bit KV uses un-fused `quantizedScaledDotProductAttention`, not steel | **reverted** — no win; real gap is the quantized-KV attention path (see below) |
-| K2 | fused flash-attention for quantized-KV path | _in progress_ | — |
+| K2 | fused flash-attention for quantized-KV path | from-scratch kernel BUILT (correct, memory-safe) but no perf win (per-element reductions lose to NAX-GEMM): TTFT 2k +21% / 8k par / 24k −5% / 48k +4% | kernel **reverted**; but the investigation found + fixed a real causal-mask correctness bug (K3) |
+| K3 | causal-mask leak fix (`leastNormalMagnitude`→`-greatestFiniteMagnitude`) in `quantizedScaledDotProductAttention` | the bool/causal mask used +1.18e-38 (leaks `exp(-max)` weight onto masked/future keys); perf-neutral (8k TTFT/decode unchanged), greedy output coherent | **LANDED** — genuine correctness fix on the production quantized-KV attention path |
 
 ## Metal-4 / NAX tensor-op matmul (M5 Max investigation)
 
@@ -162,6 +163,35 @@ quantized flash-attention kernel (large new-kernel effort, high risk) or accepti
 win here, +KV memory). Both are out of scope as measured no-wins; documented so the gap isn't
 re-attempted blindly. Decode is unaffected (head_dim 256 uses the specialized vector-256 kernel).
 
+### K2: resolving the quantized-KV attention gap (investigated deeply, no win landed)
+
+MLX 0.31.4 has **no fused quantized-SDPA** (no Metal kernel, no C++/Swift API). The fork's
+`quantizedScaledDotProductAttention` (the only quantized-KV attention) is un-fused: `quantizedMM`
+(QK^T, transpose=true → **NAX**) → `MLX.where` causal mask → `softmax` → `quantizedMM` (·V,
+transpose=false → **non-NAX**). Three angles investigated to close the gap, all measured:
+
+1. **Force fp16 KV → use the fused steel SDPA** (`--kv-bits 0` + bd=256 gate). 48k: 56.3 s vs 53.7 s
+   baseline → **+5% regression**. The fused flash kernel (no S materialization) does **not** beat the
+   un-fused NAX-GEMM path at our shapes; bd=256 tile occupancy loss dominates.
+2. **Enable non-transpose NAX for the ·V matmul** (the one attention GEMM that misses NAX, since the
+   `qmm` dispatcher gates NAX on `transpose==true`). A complete `qmm_n_nax` kernel exists, so relaxed
+   the gate. 24k: −2.6% (noise); **48k: 58.96 s vs 53.7 s → +9.8% regression.** `qmm_n_nax` is
+   *slower* than the MMA non-transpose path here — which is **why upstream gates it off**. Reverted.
+3. **From-scratch fused quantized flash-attention kernel — BUILT, then REVERTED (no perf win).**
+   Wrote a custom `MLXFast.metalKernel` (270 lines): one threadgroup per (batch, q-head, query-tile),
+   online-softmax over the KV cache, dequantizing 4-bit K/V tiles in-register, never materializing S.
+   - **Correctness: proven** via a standalone tiny-shape self-test — matches a correctly-masked
+     reference to fp16 rounding (~1e-3 max-abs diff) for both `.none` and `.causal` masks.
+   - **Memory: safe** — bounded in isolation (0.064 GB at Lk=4096) and in-model 2k→48k (peak
+     20.5→26.7 GB, RSS ≤15 GB). The earlier 120 GB OOM did **not** reproduce with the corrected,
+     opt-in-gated kernel (it was a buggy earlier draft and/or the GUI app running concurrently).
+   - **Perf: not a win.** In-model TTFT vs un-fused baseline: 2k +21%, 8k ~par, 24k −5.5%, 48k +3.8%.
+     The kernel's per-element `simd_sum` QK/·V reductions lose to MLX's **NAX-GEMM** un-fused path
+     (the QK^T `quantizedMM` is `transpose=true` → NAX hardware matmul). Beating it would require a
+     simdgroup-matrix/NAX flash kernel (much larger effort). **Reverted.**
+
+   **BUT this investigation found a real correctness bug in the reference** (see fix below).
+
 ## Conclusion
 
 The inference stack is already well-tuned for this machine: decode is memory-bandwidth-bound at the
@@ -173,6 +203,15 @@ future change is provable) and **two documented guardrails** (don't raise the ca
 off-by-default, useful only under real memory pressure). No accepted speedup — the honest, data-backed
 outcome is that the cheap reversible knobs are already at their optimum and the invasive lever has no
 headroom to exploit.
+
+The deep per-kernel pass (bd=256 steel, fp16-fused, non-transpose NAX, and a from-scratch fused
+quantized flash kernel) produced **no perf win** — MLX's NAX-GEMM attention is already near-roofline at
+our shapes — but it **did surface and fix a real correctness bug** (K3): the quantized-KV attention
+masked future/padding keys with `+leastNormalMagnitude` instead of a large negative, leaking
+`~exp(-max)` attention weight onto masked positions (worse at shorter causal windows). Fixed to
+`-greatestFiniteMagnitude` on all three mask sites; perf-neutral, greedy output coherent. **This bug fix
+is the one landed change** — proof that "do it properly" pays off even when the headline optimization
+turns out to be a no-op.
 
 ## Cross-scenario comparison (Metal-4 deep-dive deliverable)
 
