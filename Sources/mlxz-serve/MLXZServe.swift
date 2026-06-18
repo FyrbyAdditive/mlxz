@@ -46,6 +46,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Bound MLX's GPU buffer cache to N MB (default 512). Prevents MLX hoarding multi-GB of scratch buffers next to a large model. 0 disables the cache.")
     var gpuCacheMb: Int = 512
 
+    @Option(name: .long, help: "Apply a process-wide wired-memory limit of N MB after load so the resident model weights aren't paged/evicted under memory pressure (clamped to the device's recommended working set). 0 = off (default). The credible lever for bandwidth-bound decode on a memory-constrained machine.")
+    var wiredMb: Int = 0
+
     @Option(name: .long, help: "Max concurrent requests decoded together in one batched forward pass (continuous batching) for GatedDeltaNet models. Default 8. Concurrent requests run together instead of being serialized/rejected. MTP models decode single-sequence and queue.")
     var maxBatch: Int = 8
 
@@ -112,6 +115,7 @@ struct MLXZServe: AsyncParsableCommand {
             prefixCache: prefixCache,
             useMTP: mtp,
             gpuCacheLimitMB: gpuCacheMb,
+            wiredLimitMB: wiredMb > 0 ? wiredMb : nil,
             maxBatch: maxBatch,
             prefixCacheSlots: prefixCacheSlots,
             prefixCacheBytesMB: prefixCacheMb,
@@ -124,6 +128,12 @@ struct MLXZServe: AsyncParsableCommand {
         logger.info("loading model (first run downloads from HuggingFace)…", metadata: ["model": .string(model)])
         try await manager.load(descriptor)
         logger.info("model ready", metadata: ["model": .string(model)])
+
+        // Phase 1A: apply the wired-memory limit AFTER load (weights already resident) so they
+        // aren't paged under pressure. No-op when --wired-mb is 0.
+        if let applied = await MLXRuntime.configureWired(perf: perf) {
+            logger.info("wired-memory limit applied", metadata: ["bytes": .stringConvertible(applied)])
+        }
 
         if bench {
             try await runBenchmark(manager: manager, perf: perf)
@@ -195,7 +205,7 @@ struct MLXZServe: AsyncParsableCommand {
 
         benchPrint("=== mlxz bench ===")
         benchPrint("model=\(model) mtpDraft=\(mtpDraft ?? "none") promptTokens≈\(promptTokens) maxTokens=\(benchMaxTokens) iters=\(iters) (+1 warmup)")
-        benchPrint("perf: kvBits=\(kvBits) gpuCacheMB=\(gpuCacheMb) prefixCacheSlots=\(prefixCacheSlots)")
+        benchPrint("perf: kvBits=\(kvBits) gpuCacheMB=\(gpuCacheMb) wiredMB=\(wiredMb > 0 ? String(wiredMb) : "off") prefixCacheSlots=\(prefixCacheSlots)")
 
         var runs: [BenchRun] = []
         for i in 0 ..< (iters + 1) {

@@ -45,7 +45,7 @@ Notes:
 | Phase | Lever | Result | Decision |
 | --- | --- | --- | --- |
 | 0 | Benchmark harness | variance 0.4% < 3% | accepted (this baseline) |
-| 1A | Wired memory limit | _pending_ | — |
+| 1A | Wired memory limit (20 GB) | decode 27.20→27.02 tok/s (−0.7%, noise); variance 0.4%→2.5%; peak 19.0 GB unchanged | **no-op at idle** — kept as off-by-default `--wired-mb` (the 19 GB working set already fits the device's recommended working set, so nothing was paging; valuable only under genuine memory pressure). Default stays OFF. |
 | 1B | GPU cacheLimit sweep | _pending_ | — |
 | 1C | Adaptive auto-sizing | _pending_ | — |
 | 2 | GPU profiling gate | _pending_ | — |

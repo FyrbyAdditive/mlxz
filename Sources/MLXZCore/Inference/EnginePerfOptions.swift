@@ -32,6 +32,13 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// identically). nil = leave MLX's default. Default: 512 MB.
     public var gpuCacheLimitMB: Int?
 
+    /// Wired-memory limit in MB. When set (>0), a process-wide wired-memory limit is applied after the
+    /// model loads so the resident weights aren't paged/evicted under memory pressure — the only
+    /// credible lever for the bandwidth-bound decode on a memory-constrained machine. Clamped to the
+    /// device's recommended working set. nil/≤0 = no wired limit (default, until proven). Uses the
+    /// fork's `WiredMemoryManager` ticket system (the same mechanism the standard `generate()` uses).
+    public var wiredLimitMB: Int?
+
     /// Max sequences decoded together in one batched forward pass (continuous batching) for plain
     /// (non-MTP) requests. >1 lets concurrent requests run concurrently instead of being
     /// serialized/rejected. 1 effectively serializes. Default 8.
@@ -72,6 +79,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         prefixCache: Bool = true,
         useMTP: Bool = true,
         gpuCacheLimitMB: Int? = 512,
+        wiredLimitMB: Int? = nil,
         maxBatch: Int = 8,
         prefixCacheSlots: Int = 16,
         prefixCacheBytesMB: Int = 2048,
@@ -85,6 +93,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.prefixCache = prefixCache
         self.useMTP = useMTP
         self.gpuCacheLimitMB = gpuCacheLimitMB
+        self.wiredLimitMB = wiredLimitMB
         self.maxBatch = maxBatch
         self.prefixCacheSlots = prefixCacheSlots
         self.prefixCacheBytesMB = prefixCacheBytesMB
