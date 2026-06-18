@@ -47,7 +47,18 @@ Notes:
 | 0 | Benchmark harness | variance 0.4% < 3% | accepted (this baseline) |
 | 1A | Wired memory limit (20 GB) | decode 27.20→27.02 tok/s (−0.7%, noise); variance 0.4%→2.5%; peak 19.0 GB unchanged | **no-op at idle** — kept as off-by-default `--wired-mb` (the 19 GB working set already fits the device's recommended working set, so nothing was paging; valuable only under genuine memory pressure). Default stays OFF. |
 | 1B | GPU cacheLimit sweep | tok/s by cacheMB: 0→26.09, 256→26.16, **512→27.20**, 1024→21.21, 2048→21.13 (peak 19.0 GB at all) | **current default (512) is optimal** — no change. Larger caches **regress −22%** (eviction/thrash vs resident weights); smaller churn −4%. Confirms the 512 default + documents a guardrail against raising it. |
-| 1B | GPU cacheLimit sweep | _pending_ | — |
-| 1C | Adaptive auto-sizing | _pending_ | — |
-| 2 | GPU profiling gate | _pending_ | — |
-| 3 | mx.compile sub-block | _pending_ | — |
+| 1C | Adaptive auto-sizing | — | **skipped**: 1A/1B were no-ops (512 already optimal, wired no help), so there's no hand-tuned winner to auto-reproduce; would add complexity for ~0 gain. |
+| 2 | GPU profiling gate | decode `unaccounted ≈ 0 ms` (−0.9 ms, noise) → no dispatch overhead; cold prefill 14.8 s / 12k tok = matmul-bound; MoE/MLP already fused (`SwitchGLU`/`quantizedMatmul`, `scaledDotProductAttention`), only glue is `silu*` (negligible) | **gate NOT met** — decode & prefill are matmul/bandwidth-bound with ~0% fusible/dispatch headroom. |
+| 3 | mx.compile sub-block | not pursued | **dropped** — Phase 2 gate (>10% fusible/dispatch share) not met; documented dead end. |
+
+## Conclusion
+
+The inference stack is already well-tuned for this machine: decode is memory-bandwidth-bound at the
+matmul roofline (~0 ms CPU/dispatch overhead per step), the 512 MB GPU cache default is empirically
+optimal (raising it regresses 22%), the model's MoE/MLP/attention already route through MLX's fused
+fast paths, and the 19 GB working set fits the device's recommended working set (no paging to wire
+away). The audit produced **one reusable asset** (the committed `--bench` harness + this ledger, so any
+future change is provable) and **two documented guardrails** (don't raise the cache; wired-memory is
+off-by-default, useful only under real memory pressure). No accepted speedup — the honest, data-backed
+outcome is that the cheap reversible knobs are already at their optimum and the invasive lever has no
+headroom to exploit.
