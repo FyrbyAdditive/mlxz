@@ -103,11 +103,6 @@ public struct LocalModelStore: Sendable {
         return (obj["model_type"] as? String, hasVision)
     }
 
-    /// Read `model_type` from a config.json.
-    static func readModelType(_ configURL: URL) -> String? {
-        readConfig(configURL).modelType
-    }
-
     /// Best-effort recursive size of a directory (follows the snapshot's symlinks into blobs).
     /// On-disk size of a snapshot directory. HF caches store snapshot entries as symlinks into a
     /// shared `blobs/` directory, so we resolve each symlink to its real file and sum the unique
