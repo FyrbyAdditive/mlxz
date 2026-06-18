@@ -5,7 +5,11 @@ import MLXLMCommon
 
 extension MLXInferenceEngine {
     /// Map our normalized `ChatMessage` to the package's `Chat.Message`.
-    static func mapMessage(_ message: ChatMessage) -> Chat.Message {
+    /// - Parameter maxImagePixels: downscale images above this pixel budget (aspect preserved) before
+    ///   the vision encoder. A 24.5 MP photo otherwise makes the VLM allocate tens of GB for the
+    ///   vision-token attention tensors — over the GPU's max Metal buffer — and hard-crashes the
+    ///   process. 0 = no cap.
+    static func mapMessage(_ message: ChatMessage, maxImagePixels: Int = 0) -> Chat.Message {
         let role: Chat.Message.Role = switch message.role {
         case .system: .system
         case .user: .user
@@ -21,16 +25,34 @@ extension MLXInferenceEngine {
         let images: [UserInput.Image] = message.content.compactMap { part in
             switch part {
             case .imageURL(let url):
+                // Local file URLs can be loaded + capped now; remote URLs are fetched by the
+                // processor later (left uncapped — the data-URL path is the common upload route).
+                if url.isFileURL, let ci = CIImage(contentsOf: url) {
+                    return .ciImage(downscale(ci, maxPixels: maxImagePixels))
+                }
                 return .url(url)
             case .imageData(let data):
-                // Decode inline (base64 data-URL) image bytes into a CIImage for VLMs.
-                return CIImage(data: data).map { UserInput.Image.ciImage($0) }
+                // Decode inline (base64 data-URL) image bytes into a CIImage for VLMs, capping size.
+                return CIImage(data: data).map { .ciImage(downscale($0, maxPixels: maxImagePixels)) }
             case .text:
                 return nil
             }
         }
 
         return Chat.Message(role: role, content: text, images: images, videos: [])
+    }
+
+    /// Downscale a CIImage so width×height ≤ `maxPixels` (aspect preserved). No-op when `maxPixels`
+    /// is 0 or the image is already within budget. Guards the VLM against multi-GB vision-token
+    /// tensors that exceed the GPU's max Metal buffer.
+    static func downscale(_ image: CIImage, maxPixels: Int) -> CIImage {
+        guard maxPixels > 0 else { return image }
+        let w = image.extent.width, h = image.extent.height
+        guard w > 0, h > 0 else { return image }
+        let pixels = w * h
+        guard pixels > CGFloat(maxPixels) else { return image }
+        let scale = (CGFloat(maxPixels) / pixels).squareRoot()
+        return image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
     /// Map our `ChatMessage` to an OpenAI-shaped message dictionary for the chat template's

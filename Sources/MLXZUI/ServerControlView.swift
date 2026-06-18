@@ -57,6 +57,11 @@ struct ServerControlView: View {
                     Text("4096 (high)").tag(4096)
                 }
                 Toggle("Use MTP drafter (self-speculative)", isOn: perf.useMTPDrafter)
+                Picker("Max image resolution", selection: perf.maxImagePixels) {
+                    Text("1 MP (low mem)").tag(1_048_576)
+                    Text("4 MP (recommended)").tag(4_194_304)
+                    Text("8 MP (high detail)").tag(8_388_608)
+                }
             } header: {
                 Text("Performance")
             } footer: {

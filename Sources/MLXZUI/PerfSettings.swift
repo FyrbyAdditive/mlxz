@@ -34,6 +34,11 @@ public final class PerfSettings: @unchecked Sendable {
     public var useMTPDrafter: Bool {
         didSet { defaults.set(useMTPDrafter, forKey: Keys.useMTPDrafter) }
     }
+    /// Max image resolution (pixels = w×h) fed to the vision encoder; larger images are downscaled.
+    /// Bounds the vision-token tensors that otherwise OOM the GPU on a high-res photo. Default ≈4 MP.
+    public var maxImagePixels: Int {
+        didSet { defaults.set(maxImagePixels, forKey: Keys.maxImagePixels) }
+    }
 
     private let defaults: UserDefaults
 
@@ -44,6 +49,7 @@ public final class PerfSettings: @unchecked Sendable {
         static let prefixCacheBytesMB = "perf.prefixCacheBytesMB"
         static let reasoningTokenBudget = "perf.reasoningTokenBudget"
         static let useMTPDrafter = "perf.useMTPDrafter"
+        static let maxImagePixels = "perf.maxImagePixels"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -61,6 +67,8 @@ public final class PerfSettings: @unchecked Sendable {
             (defaults.object(forKey: Keys.reasoningTokenBudget) as? Int) ?? (d.reasoningTokenBudget ?? 0)
         self.useMTPDrafter =
             (defaults.object(forKey: Keys.useMTPDrafter) as? Bool) ?? d.useMTP
+        self.maxImagePixels =
+            (defaults.object(forKey: Keys.maxImagePixels) as? Int) ?? d.maxImagePixels
     }
 
     /// Build `EnginePerfOptions` from the current settings, preserving all other engine defaults.
@@ -70,6 +78,7 @@ public final class PerfSettings: @unchecked Sendable {
             prefixCacheSlots: prefixCacheSlots,
             prefixCacheBytesMB: prefixCacheBytesMB,
             snapshotBlock: snapshotBlock,
-            reasoningTokenBudget: reasoningTokenBudget > 0 ? reasoningTokenBudget : nil)
+            reasoningTokenBudget: reasoningTokenBudget > 0 ? reasoningTokenBudget : nil,
+            maxImagePixels: maxImagePixels)
     }
 }

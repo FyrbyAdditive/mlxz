@@ -56,6 +56,13 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// A per-request `reasoning_effort`/`max_reasoning_tokens` overrides this. Default 2048.
     public var reasoningTokenBudget: Int?
 
+    /// Max image resolution (in pixels = width×height) fed to the vision encoder. Larger images are
+    /// downscaled (aspect preserved) before VLM processing. A high-resolution photo (e.g. a 24.5 MP
+    /// HEIC) otherwise produces a vision-token grid whose attention tensors need tens of GB — far over
+    /// the GPU's max Metal buffer — and HARD-CRASHES the process (`[metal::malloc]` fatal). 0 = no cap
+    /// (not recommended). Default 4_194_304 (≈4 MP, ~2048²) — ample detail for description, safe memory.
+    public var maxImagePixels: Int
+
     /// Token granularity at which prefix snapshots are captured during prefill (block-aligned). A
     /// future request sharing a prefix reuses the largest block boundary ≤ the shared length, so
     /// smaller = more reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less
@@ -84,7 +91,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         prefixCacheSlots: Int = 16,
         prefixCacheBytesMB: Int = 2048,
         snapshotBlock: Int = 512,
-        reasoningTokenBudget: Int? = 2048
+        reasoningTokenBudget: Int? = 2048,
+        maxImagePixels: Int = 4_194_304
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
@@ -99,6 +107,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.prefixCacheBytesMB = prefixCacheBytesMB
         self.snapshotBlock = snapshotBlock
         self.reasoningTokenBudget = reasoningTokenBudget
+        self.maxImagePixels = maxImagePixels
     }
 
     public static let `default` = EnginePerfOptions()

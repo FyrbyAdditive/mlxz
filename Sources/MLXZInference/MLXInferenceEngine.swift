@@ -145,7 +145,7 @@ public struct MLXInferenceEngine: InferenceEngine {
                             tools: tools, additionalContext: additionalContext)
                     } else {
                         userInput = UserInput(
-                            chat: request.messages.map(Self.mapMessage),
+                            chat: request.messages.map { Self.mapMessage($0, maxImagePixels: perf.maxImagePixels) },
                             tools: tools, additionalContext: additionalContext)
                     }
                     let stream: AsyncStream<Generation>
