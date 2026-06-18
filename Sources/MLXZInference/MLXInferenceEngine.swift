@@ -98,7 +98,6 @@ public struct MLXInferenceEngine: InferenceEngine {
                 // tool-call parsing, so reasoning is surfaced on its own channel (clients render it
                 // separately) and never leaks into the visible content or gets mis-parsed as a tool
                 // call. Visible text then flows through the tool-call fallback parser as before.
-                var think = ThinkParser()
                 var fallback = ToolCallParser()
                 var sawToolCall = false  // true if ANY tool call (native or parsed from text) was emitted
                 do {
@@ -110,8 +109,21 @@ public struct MLXInferenceEngine: InferenceEngine {
                     // reasoning leaks). When the request carries tools, disable thinking
                     // (`enable_thinking: false` → the template emits an empty `<think></think>` and
                     // goes straight to the answer/tool-call) so the model acts instead of musing.
+                    let thinkingDisabled = (tools?.isEmpty == false)
                     let additionalContext: [String: any Sendable]? =
-                        (tools?.isEmpty == false) ? ["enable_thinking": false] : nil
+                        thinkingDisabled ? ["enable_thinking": false] : nil
+                    // When thinking is ON, the chat template pre-opens `<think>` (no opening tag in
+                    // the stream) and some checkpoints write reasoning as plain prose that closes
+                    // `</think>` only late — so start the parser INSIDE the think block to route that
+                    // prose to reasoning regardless of chunk timing. When thinking is disabled (tools
+                    // present), the template emits an empty `<think></think>` and goes straight to the
+                    // answer, so the parser starts in `.visible`.
+                    var think = ThinkParser(startInsideThink: !thinkingDisabled)
+                    // Reasoning-token budget (hard cap on the <think> block). Only meaningful when
+                    // thinking is ON; per-request override else the engine default. 0 = uncapped.
+                    let reasoningBudget = thinkingDisabled
+                        ? 0
+                        : max(0, request.reasoningTokenBudget ?? perf.reasoningTokenBudget ?? 0)
 
                     // If the conversation contains tool calls/results, replay it through the raw
                     // `.messages` dict path so `tool_calls`/`tool_call_id` reach the template
@@ -138,7 +150,8 @@ public struct MLXInferenceEngine: InferenceEngine {
                         // reuse via the LRU on the PromptCacheBox.
                         stream = await mtpScheduler.submit(
                             userInput: userInput, parameters: parameters,
-                            box: usePrefixCache ? promptCache : nil)
+                            box: usePrefixCache ? promptCache : nil,
+                            reasoningBudget: reasoningBudget)
                     } else if isBatchable {
                         // Continuous batching: concurrent plain requests decode together. Tokenize
                         // the prompt, then submit to the shared batch engine.

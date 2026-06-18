@@ -49,13 +49,25 @@ struct ServerControlView: View {
                     Text("1024").tag(1024)
                     Text("2048 (less RAM)").tag(2048)
                 }
+                Picker("Reasoning budget", selection: perf.reasoningTokenBudget) {
+                    Text("Uncapped").tag(0)
+                    Text("256 (low)").tag(256)
+                    Text("1024 (medium)").tag(1024)
+                    Text("2048").tag(2048)
+                    Text("4096 (high)").tag(4096)
+                }
+                Toggle("Use MTP drafter (self-speculative)", isOn: perf.useMTPDrafter)
             } header: {
                 Text("Performance")
             } footer: {
                 Text(
                     "KV compression shrinks the cache (4-bit is lossless for greedy on large models). "
                     + "Prefix cache reuses a shared system prompt across requests; more slots / smaller "
-                    + "blocks raise reuse but use a little more memory. Changes apply on the next model load.")
+                    + "blocks raise reuse but use a little more memory. Reasoning budget caps the model's "
+                    + "<think> block — it force-closes reasoning after N tokens and makes the model answer "
+                    + "(a request's reasoning_effort overrides this). MTP drafter auto-attaches a matching "
+                    + "installed drafter for faster decoding; turn off to load the base model alone. "
+                    + "Changes apply on the next model load.")
                 .font(.caption).foregroundStyle(.secondary)
             }
 

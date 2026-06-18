@@ -61,6 +61,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Hard ceiling (MB) on total RAM pinned by the prefix-snapshot LRU. Evicts least-recently-used snapshots to stay under this, bounding memory regardless of context length. Default 2048; 0 = no byte cap.")
     var prefixCacheMb: Int = 2048
 
+    @Option(name: .long, help: "Default cap on <think> reasoning tokens before the block is force-closed and the model must answer. Bounds the worst case (reasoning can otherwise run thousands of tokens). Default 2048; 0 = uncapped. A request's reasoning_effort/max_reasoning_tokens overrides this.")
+    var reasoningBudget: Int = 2048
+
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
@@ -91,7 +94,8 @@ struct MLXZServe: AsyncParsableCommand {
             maxBatch: maxBatch,
             prefixCacheSlots: prefixCacheSlots,
             prefixCacheBytesMB: prefixCacheMb,
-            snapshotBlock: snapshotBlock
+            snapshotBlock: snapshotBlock,
+            reasoningTokenBudget: reasoningBudget > 0 ? reasoningBudget : nil
         )
         let manager = ModelManager(
             loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)

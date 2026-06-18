@@ -43,6 +43,12 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// 2048 (2GB). 0 = no byte cap (count cap only — not recommended for long contexts).
     public var prefixCacheBytesMB: Int
 
+    /// Default cap on tokens the model may spend inside a `<think>` reasoning block before it is
+    /// force-closed and made to answer. Bounds the worst case (a reasoning model can otherwise emit
+    /// thousands of `<think>` tokens — measured ~5,464 on an agentic turn). nil/≤0 = uncapped.
+    /// A per-request `reasoning_effort`/`max_reasoning_tokens` overrides this. Default 2048.
+    public var reasoningTokenBudget: Int?
+
     /// Token granularity at which prefix snapshots are captured during prefill (block-aligned). A
     /// future request sharing a prefix reuses the largest block boundary ≤ the shared length, so
     /// smaller = more reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less
@@ -69,7 +75,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         maxBatch: Int = 8,
         prefixCacheSlots: Int = 16,
         prefixCacheBytesMB: Int = 2048,
-        snapshotBlock: Int = 512
+        snapshotBlock: Int = 512,
+        reasoningTokenBudget: Int? = 2048
     ) {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
@@ -82,6 +89,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.prefixCacheSlots = prefixCacheSlots
         self.prefixCacheBytesMB = prefixCacheBytesMB
         self.snapshotBlock = snapshotBlock
+        self.reasoningTokenBudget = reasoningTokenBudget
     }
 
     public static let `default` = EnginePerfOptions()

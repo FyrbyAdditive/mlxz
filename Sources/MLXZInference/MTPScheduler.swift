@@ -23,6 +23,7 @@ actor MTPScheduler {
         let box: PromptCacheBox?
         let continuation: AsyncStream<Generation>.Continuation
         let id: Int
+        let reasoningBudget: Int
     }
 
     /// An admitted, stepping session plus where to store its prefix snapshot for reuse.
@@ -47,7 +48,8 @@ actor MTPScheduler {
     func submit(
         userInput: consuming UserInput,
         parameters: GenerateParameters,
-        box: PromptCacheBox?
+        box: PromptCacheBox?,
+        reasoningBudget: Int = 0
     ) -> AsyncStream<Generation> {
         let (stream, continuation) = AsyncStream<Generation>.makeStream()
         let id = nextID
@@ -55,7 +57,7 @@ actor MTPScheduler {
         pending.append(
             Pending(
                 input: SendableValueBox(userInput), parameters: parameters, box: box,
-                continuation: continuation, id: id))
+                continuation: continuation, id: id, reasoningBudget: reasoningBudget))
         continuation.onTermination = { [weak self] _ in
             Task { await self?.markCancelled(id) }
         }
@@ -170,7 +172,7 @@ actor MTPScheduler {
                 model: model, context: context, parameters: p.parameters,
                 promptTokens: promptTokens, modelCache: restoreModel, mtpCache: restoreMtp,
                 skipPrefill: restoreCount, snapshotAt: snapshotAt, snapshotBlock: snapshotBlock,
-                referenceTokens: lru?.mostRecentTokens ?? [],
+                referenceTokens: lru?.mostRecentTokens ?? [], reasoningBudget: p.reasoningBudget,
                 stopTokenIds: stopTokenIds, continuation: p.continuation, result: MTPCacheResult())
             sessions.append(Active(session: session, id: p.id, lru: lru))
         }

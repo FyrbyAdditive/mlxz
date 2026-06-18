@@ -14,8 +14,10 @@ import Testing
 @Suite struct ThinkParserTests {
 
     /// Feed `chunks` through a fresh parser, return concatenated (visible, reasoning).
-    private func run(_ chunks: [String]) -> (visible: String, reasoning: String) {
-        var p = ThinkParser()
+    private func run(_ chunks: [String], startInsideThink: Bool = false)
+        -> (visible: String, reasoning: String)
+    {
+        var p = ThinkParser(startInsideThink: startInsideThink)
         var vis = "", rea = ""
         for c in chunks {
             let o = p.consume(c)
@@ -119,5 +121,51 @@ import Testing
         let (v, r) = run(["a < b and c > d, also 1<2"])
         #expect(v == "a < b and c > d, also 1<2")
         #expect(r == "")
+    }
+
+    // MARK: - Pre-opened think block (template pre-opens `<think>`, prose streams across chunks)
+
+    @Test func preOpenedReasoningStreamedAcrossChunks() {
+        // The real-model shape: the template pre-opened `<think>` (no open tag in the stream), the
+        // model writes reasoning as plain prose across MANY chunks, and `</think>` arrives only at
+        // the end. With startInsideThink the prose is all reasoning, the post-tag text is the answer.
+        let (v, r) = run(
+            ["Here's a thinking process:\n\n", "1. Understand the problem. ", "2. Compute 17*23. ",
+             "3. The answer is 391.", "\n</think>\n\n", "17 * 23 = 391."],
+            startInsideThink: true)
+        #expect(r == "Here's a thinking process:\n\n1. Understand the problem. 2. Compute 17*23. 3. The answer is 391.\n")
+        #expect(v == "\n\n17 * 23 = 391.")
+    }
+
+    @Test func preOpenedReasoningRegressionWithVisibleStart() {
+        // WITHOUT startInsideThink (the old behavior), the same streamed prose leaks into visible
+        // because each chunk is flushed before the late `</think>` arrives — this is the quirk fixed
+        // by starting inside the block. Documents why the flag is necessary.
+        let (v, _) = run(
+            ["Here's a thinking process:\n\n", "1. Understand. ", "2. Compute.",
+             "\n</think>\n\n", "Answer: 391."],
+            startInsideThink: false)
+        #expect(v.contains("Here's a thinking process"))  // leaked — the bug startInsideThink fixes
+    }
+
+    @Test func preOpenedThenForcedCloseTransition() {
+        // The exact stream our reasoning-budget force-close produces: pre-opened reasoning, then our
+        // injected transition string + `</think>`, then the answer. All reasoning before `</think>`,
+        // answer after.
+        let (v, r) = run(
+            ["Step one. ", "Step two. ",
+             "\nConsidering the limited time, I'll answer based on the above.\n</think>\n\n",
+             "The final answer is 42."],
+            startInsideThink: true)
+        #expect(v == "\n\nThe final answer is 42.")
+        #expect(r == "Step one. Step two. \nConsidering the limited time, I'll answer based on the above.\n")
+    }
+
+    @Test func preOpenedUnterminatedIsAllReasoning() {
+        // Pre-opened think that never closes (model stopped mid-reasoning): everything is reasoning,
+        // nothing leaks to visible.
+        let (v, r) = run(["thinking ", "and more thinking"], startInsideThink: true)
+        #expect(v == "")
+        #expect(r == "thinking and more thinking")
     }
 }

@@ -30,7 +30,8 @@ struct ChatCompletionsEndpoint: OpenAIEndpoint {
             sampling: sampling,
             maxTokens: wire.maxCompletionTokens ?? wire.maxTokens,
             stop: wire.stop?.values ?? [],
-            tools: (tools?.isEmpty == true) ? nil : tools
+            tools: (tools?.isEmpty == true) ? nil : tools,
+            reasoningTokenBudget: wire.resolvedReasoningBudget
         )
     }
 

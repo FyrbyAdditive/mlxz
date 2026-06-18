@@ -125,8 +125,11 @@ public final class AppModel {
     // MARK: - Model lifecycle
 
     public func load(_ descriptor: ModelDescriptor) async {
-        // Auto-attach a matching installed MTP drafter (self-speculative decoding) if present.
-        let drafterID = matchingInstalledDrafter(for: descriptor.repoID)
+        // Auto-attach a matching installed MTP drafter (self-speculative decoding) if present —
+        // unless the user disabled the drafter in Performance settings.
+        let drafterID = perfSettings.useMTPDrafter
+            ? matchingInstalledDrafter(for: descriptor.repoID)
+            : nil
         if let drafterID {
             logStore.append("Loading \(descriptor.repoID) + MTP drafter \(drafterID)…")
         } else {

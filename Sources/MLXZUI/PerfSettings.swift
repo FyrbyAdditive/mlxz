@@ -23,6 +23,17 @@ public final class PerfSettings: @unchecked Sendable {
     public var prefixCacheBytesMB: Int {
         didSet { defaults.set(prefixCacheBytesMB, forKey: Keys.prefixCacheBytesMB) }
     }
+    /// Default cap on `<think>` reasoning tokens before the block is force-closed (0 = uncapped).
+    /// A request's `reasoning_effort`/`max_reasoning_tokens` overrides this per request.
+    public var reasoningTokenBudget: Int {
+        didSet { defaults.set(reasoningTokenBudget, forKey: Keys.reasoningTokenBudget) }
+    }
+    /// Whether to auto-attach a matching installed MTP drafter (self-speculative decoding) when a
+    /// model is loaded. Default true. Disable to load the base model alone (e.g. to A/B the speedup,
+    /// or save the drafter's memory). Applies on the next model load.
+    public var useMTPDrafter: Bool {
+        didSet { defaults.set(useMTPDrafter, forKey: Keys.useMTPDrafter) }
+    }
 
     private let defaults: UserDefaults
 
@@ -31,6 +42,8 @@ public final class PerfSettings: @unchecked Sendable {
         static let prefixCacheSlots = "perf.prefixCacheSlots"
         static let snapshotBlock = "perf.snapshotBlock"
         static let prefixCacheBytesMB = "perf.prefixCacheBytesMB"
+        static let reasoningTokenBudget = "perf.reasoningTokenBudget"
+        static let useMTPDrafter = "perf.useMTPDrafter"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -44,6 +57,10 @@ public final class PerfSettings: @unchecked Sendable {
             (defaults.object(forKey: Keys.snapshotBlock) as? Int) ?? d.snapshotBlock
         self.prefixCacheBytesMB =
             (defaults.object(forKey: Keys.prefixCacheBytesMB) as? Int) ?? d.prefixCacheBytesMB
+        self.reasoningTokenBudget =
+            (defaults.object(forKey: Keys.reasoningTokenBudget) as? Int) ?? (d.reasoningTokenBudget ?? 0)
+        self.useMTPDrafter =
+            (defaults.object(forKey: Keys.useMTPDrafter) as? Bool) ?? d.useMTP
     }
 
     /// Build `EnginePerfOptions` from the current settings, preserving all other engine defaults.
@@ -52,6 +69,7 @@ public final class PerfSettings: @unchecked Sendable {
             kvBits: kvBits > 0 ? kvBits : nil,
             prefixCacheSlots: prefixCacheSlots,
             prefixCacheBytesMB: prefixCacheBytesMB,
-            snapshotBlock: snapshotBlock)
+            snapshotBlock: snapshotBlock,
+            reasoningTokenBudget: reasoningTokenBudget > 0 ? reasoningTokenBudget : nil)
     }
 }

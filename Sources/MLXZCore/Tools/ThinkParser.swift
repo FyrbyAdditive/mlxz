@@ -14,6 +14,16 @@ import Foundation
 ///     `</think>` is never legitimate visible content;
 ///   - tags split across chunk boundaries are handled.
 ///
+/// IMPORTANT — pre-opened think blocks: Qwen3.5/3.6's chat template PRE-OPENS `<think>\n` on the
+/// assistant turn, so the opening tag is in the *prompt*, never in the generated stream — the model
+/// starts already inside the reasoning block and only ever emits the *closing* `</think>`. Worse,
+/// some checkpoints (e.g. Qwen3.6-27B-4bit) write the whole reasoning as plain prose and emit
+/// `</think>` only late (or not at all). If the parser started in `.visible`, that prose would be
+/// flushed as visible content chunk-by-chunk *before* the late `</think>` ever arrived — so the
+/// "bare leading `</think>`" rule can't reclaim it. Callers that know thinking is on (the template
+/// pre-opened the block) MUST construct the parser with `startInsideThink: true` so all prose is
+/// routed to reasoning until `</think>` — independent of chunk timing.
+///
 /// Feed deltas via `consume(_:)`; call `finish()` at end-of-stream to flush.
 public struct ThinkParser: Sendable {
     public struct Output: Sendable, Equatable {
@@ -33,10 +43,15 @@ public struct ThinkParser: Sendable {
         case insideThink    // between <think> and </think>
     }
 
-    private var mode: Mode = .visible
+    private var mode: Mode
     private var buffer = ""
 
-    public init() {}
+    /// - Parameter startInsideThink: begin in the reasoning block (the chat template pre-opened
+    ///   `<think>` so the stream starts inside it and only ever emits the closing tag). Default false
+    ///   (plain replies / no pre-opened think).
+    public init(startInsideThink: Bool = false) {
+        self.mode = startInsideThink ? .insideThink : .visible
+    }
 
     public mutating func consume(_ chunk: String) -> Output {
         buffer += chunk

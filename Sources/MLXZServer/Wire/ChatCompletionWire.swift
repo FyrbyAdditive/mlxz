@@ -17,6 +17,12 @@ struct ChatCompletionRequest: Decodable, Sendable {
     var streamOptions: StreamOptions?
     var tools: [WireTool]?
     var seed: UInt64?
+    /// OpenAI `reasoning_effort` ("low" | "medium" | "high"). Mapped to a reasoning-token budget.
+    var reasoningEffort: String?
+    /// Explicit numeric override of the reasoning-token budget. We accept both the OpenAI-ish
+    /// `max_reasoning_tokens` and Qwen's `thinking_budget` spelling; either wins over `reasoning_effort`.
+    var maxReasoningTokens: Int?
+    var thinkingBudget: Int?
 
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature, stop, stream, tools, seed
@@ -24,6 +30,24 @@ struct ChatCompletionRequest: Decodable, Sendable {
         case maxTokens = "max_tokens"
         case maxCompletionTokens = "max_completion_tokens"
         case streamOptions = "stream_options"
+        case reasoningEffort = "reasoning_effort"
+        case maxReasoningTokens = "max_reasoning_tokens"
+        case thinkingBudget = "thinking_budget"
+    }
+
+    /// Resolve the per-request reasoning-token budget from the wire fields, or nil to fall back to
+    /// the engine default. An explicit numeric field (`max_reasoning_tokens`/`thinking_budget`) wins;
+    /// otherwise map `reasoning_effort`. Values: low→256, medium→1024, high→4096, "none"/"minimal"→1.
+    /// A negative number means "uncapped" (≤0 disables the cap in the engine).
+    var resolvedReasoningBudget: Int? {
+        if let n = maxReasoningTokens ?? thinkingBudget { return n }
+        switch reasoningEffort?.lowercased() {
+        case "none", "minimal": return 1
+        case "low": return 256
+        case "medium": return 1024
+        case "high": return 4096
+        default: return nil
+        }
     }
 
     var isStreaming: Bool { stream ?? false }
