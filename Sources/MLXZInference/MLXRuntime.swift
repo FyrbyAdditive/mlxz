@@ -24,4 +24,16 @@ public enum MLXRuntime {
             MLX.GPU.set(cacheLimit: mb * 1024 * 1024)
         }
     }
+
+    // MARK: - Memory introspection (keeps the MLX import boundary inside this module)
+
+    /// Peak GPU memory (bytes) since the last `resetPeakMemory()`. Used by the benchmark harness.
+    public static var peakMemoryBytes: Int { MLX.Memory.peakMemory }
+    /// Currently-active GPU memory (bytes).
+    public static var activeMemoryBytes: Int { MLX.Memory.activeMemory }
+    /// GPU buffer-cache memory (bytes).
+    public static var cacheMemoryBytes: Int { MLX.Memory.cacheMemory }
+    /// Reset the peak-memory high-water mark (call before a measured run). The `Memory.peakMemory`
+    /// setter ignores its value and resets the high-water mark.
+    public static func resetPeakMemory() { MLX.Memory.peakMemory = 0 }
 }

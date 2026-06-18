@@ -67,7 +67,28 @@ struct MLXZServe: AsyncParsableCommand {
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
+    // MARK: - Benchmark mode (Phase 0 harness)
+
+    @Flag(name: .long, help: "Run a fixed-prompt benchmark (no server) and print median decode/TTFT/memory metrics, then exit. Reuses the exact server load + generate path so perf knobs are exercised identically.")
+    var bench: Bool = false
+
+    @Option(name: .long, help: "Benchmark prompt size in tokens (a repeated filler prompt). Small (~512) isolates decode; large (~80000) isolates prefill/TTFT. Default 512.")
+    var promptTokens: Int = 512
+
+    @Option(name: .long, help: "Benchmark tokens to generate per iteration. Default 256.")
+    var benchMaxTokens: Int = 256
+
+    @Option(name: .long, help: "Benchmark warm iterations (after 1 discarded warmup). Default 3.")
+    var iters: Int = 3
+
     func run() async throws {
+        // Force the per-step decode diagnostic on for the benchmark before any model/MTPSession is
+        // touched (MTPSession reads MLXZ_DECODE_DIAG once at static init).
+        if bench { setenv("MLXZ_DECODE_DIAG", "1", 1) }
+        try await runImpl()
+    }
+
+    func runImpl() async throws {
         LoggingSystem.bootstrap { label in
             var handler = StreamLogHandler.standardOutput(label: label)
             handler.logLevel = .info
@@ -104,6 +125,11 @@ struct MLXZServe: AsyncParsableCommand {
         try await manager.load(descriptor)
         logger.info("model ready", metadata: ["model": .string(model)])
 
+        if bench {
+            try await runBenchmark(manager: manager, perf: perf)
+            return
+        }
+
         let localStore = LocalModelStore()
         let embeddingManager = EmbeddingManager(loader: MLXEmbeddingLoader())
         let server = InferenceServer(
@@ -130,5 +156,109 @@ struct MLXZServe: AsyncParsableCommand {
 
         // Run until cancelled (Ctrl-C).
         try await Task.sleep(for: .seconds(60 * 60 * 24 * 365))
+    }
+
+    // MARK: - Benchmark routine
+
+    /// One iteration's measured numbers. Decode ms/step comes from the engine's `[DECODE]` diagnostic
+    /// (printed to stderr); here we capture the end-to-end wall split (prefill = time-to-first-token,
+    /// decode = remaining) plus token count and GPU memory snapshot.
+    private struct BenchRun {
+        var ttftSeconds: Double          // wall time to first generated token (prefill-dominated)
+        var decodeSeconds: Double        // wall time generating the rest
+        var generatedTokens: Int
+        var peakMemoryBytes: Int
+        var decodeTokPerSec: Double { decodeSeconds > 0 ? Double(max(0, generatedTokens - 1)) / decodeSeconds : 0 }
+    }
+
+    /// Write a benchmark line to stderr (unbuffered, so it interleaves correctly with the engine's
+    /// `[DECODE]` stderr lines and always flushes — plain `print` to stdout buffers under redirection).
+    private func benchPrint(_ s: String) {
+        FileHandle.standardError.write(Data((s + "\n").utf8))
+    }
+
+    private func runBenchmark(manager: ModelManager, perf: EnginePerfOptions) async throws {
+        guard let engine = await manager.currentEngine() else {
+            benchPrint("bench: no engine loaded"); return
+        }
+        // A deterministic filler prompt of approximately `promptTokens` tokens (~0.75 word/token).
+        let words = max(1, Int(Double(promptTokens) * 0.75))
+        let filler = Array(repeating: "lorem ipsum dolor sit amet", count: (words / 5) + 1)
+            .joined(separator: " ")
+        let prompt = "Repeat nothing. Context follows.\n\(filler)\n\nReply with a short story."
+        let request = GenerationRequest(
+            messages: [ChatMessage(role: .user, text: prompt)],
+            sampling: SamplingParameters(temperature: 0),   // greedy → deterministic, comparable
+            maxTokens: benchMaxTokens,
+            reasoningTokenBudget: 0                          // uncapped: measure raw decode, not the cap
+        )
+
+        benchPrint("=== mlxz bench ===")
+        benchPrint("model=\(model) mtpDraft=\(mtpDraft ?? "none") promptTokens≈\(promptTokens) maxTokens=\(benchMaxTokens) iters=\(iters) (+1 warmup)")
+        benchPrint("perf: kvBits=\(kvBits) gpuCacheMB=\(gpuCacheMb) prefixCacheSlots=\(prefixCacheSlots)")
+
+        var runs: [BenchRun] = []
+        for i in 0 ..< (iters + 1) {
+            MLXRuntime.resetPeakMemory()
+            let run = try await benchOnce(engine: engine, request: request)
+            let tag = i == 0 ? "warmup(discard)" : "run \(i)"
+            benchPrint(String(format: "  %@: ttft=%.2fs decode=%.2fs gen=%d tok/s=%.2f peakMem=%.2fGB",
+                              tag, run.ttftSeconds, run.decodeSeconds, run.generatedTokens,
+                              run.decodeTokPerSec, Double(run.peakMemoryBytes) / 1e9))
+            if i > 0 { runs.append(run) }   // discard the first (warmup)
+        }
+        guard !runs.isEmpty else { return }
+
+        func median(_ xs: [Double]) -> Double {
+            let s = xs.sorted(); let n = s.count
+            return n % 2 == 1 ? s[n/2] : (s[n/2 - 1] + s[n/2]) / 2
+        }
+        func stddev(_ xs: [Double]) -> Double {
+            guard xs.count > 1 else { return 0 }
+            let m = xs.reduce(0, +) / Double(xs.count)
+            return (xs.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(xs.count - 1)).squareRoot()
+        }
+
+        let tps = runs.map(\.decodeTokPerSec)
+        let ttft = runs.map(\.ttftSeconds)
+        let dec = runs.map(\.decodeSeconds)
+        let peak = runs.map { Double($0.peakMemoryBytes) / 1e9 }
+        let tpsMed = median(tps)
+        let tpsVarPct = tpsMed > 0 ? stddev(tps) / tpsMed * 100 : 0
+
+        benchPrint("--- median over \(runs.count) warm runs ---")
+        benchPrint(String(format: "  decode tok/s = %.2f  (stddev/median = %.1f%%)", tpsMed, tpsVarPct))
+        benchPrint(String(format: "  TTFT         = %.2fs", median(ttft)))
+        benchPrint(String(format: "  decode time  = %.2fs", median(dec)))
+        benchPrint(String(format: "  peak memory  = %.2f GB", median(peak)))
+        benchPrint("  (per-step backbone/mtp/STEPWALL: see the [DECODE] lines above on stderr)")
+        if tpsVarPct >= 3 {
+            benchPrint("  ⚠️ run-to-run variance ≥3% — signal too noisy to trust a 5% win; rerun on a quiet machine.")
+        }
+    }
+
+    /// Run one generation, splitting wall time into TTFT (to first token) and decode (the rest).
+    private func benchOnce(engine: any InferenceEngine, request: GenerationRequest) async throws -> BenchRun {
+        let t0 = Date()
+        var firstTokenAt: Date?
+        var generated = 0
+        let stream = try await engine.generate(request)
+        for try await event in stream {
+            switch event {
+            case .textDelta, .reasoningDelta:
+                if firstTokenAt == nil { firstTokenAt = Date() }
+                generated += 1
+            case .completed(let result):
+                generated = max(generated, result.usage.completionTokens)
+            default:
+                break
+            }
+        }
+        let end = Date()
+        let ttft = (firstTokenAt ?? end).timeIntervalSince(t0)
+        let decode = end.timeIntervalSince(firstTokenAt ?? end)
+        return BenchRun(
+            ttftSeconds: ttft, decodeSeconds: decode, generatedTokens: generated,
+            peakMemoryBytes: MLXRuntime.peakMemoryBytes)
     }
 }
