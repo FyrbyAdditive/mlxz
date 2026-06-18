@@ -53,6 +53,7 @@ Notes:
 | K1 | bd=256 fused steel attention (gate relax) | 24k −6% / 48k +2–5% (regression); root cause: 4-bit KV uses un-fused `quantizedScaledDotProductAttention`, not steel | **reverted** — no win; real gap is the quantized-KV attention path (see below) |
 | K2 | fused flash-attention for quantized-KV path | from-scratch kernel BUILT (correct, memory-safe) but no perf win (per-element reductions lose to NAX-GEMM): TTFT 2k +21% / 8k par / 24k −5% / 48k +4% | kernel **reverted**; but the investigation found + fixed a real causal-mask correctness bug (K3) |
 | K3 | causal-mask leak fix (`leastNormalMagnitude`→`-greatestFiniteMagnitude`) in `quantizedScaledDotProductAttention` | the bool/causal mask used +1.18e-38 (leaks `exp(-max)` weight onto masked/future keys); perf-neutral (8k TTFT/decode unchanged), greedy output coherent | **LANDED** — genuine correctness fix on the production quantized-KV attention path |
+| O1 | GPU cache-limit re-test full-RAM (omlx sets cache=RAM) | decode tok/s by gpuCacheMB: **512→27.3**, 4096→21.1, 16384→21.2, 49152→21.3 (all var ≤0.2%). Order-controlled (ran 512 both first AND last → 27.3/27.1; 16384 first AND mid → 21.3/21.2) so cache value is causal, not thermal/order. | **no change — 512 confirmed optimal.** omlx's full-RAM advice is HARMFUL here: a big cache hoards scratch buffers that evict the resident 16GB weights (backbone 65.7→84ms, −22% decode). We never clear_cache mid-decode, so the omlx cache+clear pairing doesn't apply. |
 
 ## Metal-4 / NAX tensor-op matmul (M5 Max investigation)
 
