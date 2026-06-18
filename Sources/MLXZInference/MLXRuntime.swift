@@ -21,6 +21,9 @@ public enum MLXRuntime {
         guard !configured else { return }
         configured = true
 
+        // Empirically swept on the 27B+MTP (BASELINE.md Phase 1B): 512 MB is optimal. 1024/2048 MB
+        // REGRESS decode ~22% (the cache competes with resident weights → eviction/thrash); 0/256 MB
+        // churn ~4%. Do not raise the default without re-measuring.
         if let mb = perf.gpuCacheLimitMB, mb >= 0 {
             MLX.GPU.set(cacheLimit: mb * 1024 * 1024)
         }

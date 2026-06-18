@@ -46,6 +46,7 @@ Notes:
 | --- | --- | --- | --- |
 | 0 | Benchmark harness | variance 0.4% < 3% | accepted (this baseline) |
 | 1A | Wired memory limit (20 GB) | decode 27.20→27.02 tok/s (−0.7%, noise); variance 0.4%→2.5%; peak 19.0 GB unchanged | **no-op at idle** — kept as off-by-default `--wired-mb` (the 19 GB working set already fits the device's recommended working set, so nothing was paging; valuable only under genuine memory pressure). Default stays OFF. |
+| 1B | GPU cacheLimit sweep | tok/s by cacheMB: 0→26.09, 256→26.16, **512→27.20**, 1024→21.21, 2048→21.13 (peak 19.0 GB at all) | **current default (512) is optimal** — no change. Larger caches **regress −22%** (eviction/thrash vs resident weights); smaller churn −4%. Confirms the 512 default + documents a guardrail against raising it. |
 | 1B | GPU cacheLimit sweep | _pending_ | — |
 | 1C | Adaptive auto-sizing | _pending_ | — |
 | 2 | GPU profiling gate | _pending_ | — |
