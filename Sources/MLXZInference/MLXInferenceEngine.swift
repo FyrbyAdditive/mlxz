@@ -84,10 +84,16 @@ public struct MLXInferenceEngine: InferenceEngine {
             if case .draftModel = request.speculative?.mode { return true }
             return false
         }()
+        // Image requests must take the vision-capable plain path: both the MTP scheduler and the
+        // continuous-batching engine are TEXT-ONLY (they prepare `.text.tokens` and drop the image
+        // pixel features), so routing an image request through either silently discards the image and
+        // the model "sees" nothing. Keep them on `container.generate`, which runs the full VLM
+        // prepare/merge (mergeInputIdsWithImageFeatures).
+        let requestHasImages = request.messages.contains { $0.hasImages }
         let useMTP = perf.useMTP
             && capabilities.contains(.speculative)
             && !mtpOptOut
-            && !request.messages.contains { $0.hasImages }
+            && !requestHasImages
 
         // Capture only Sendable values (`request`, `container`, `parameters`). The non-Sendable
         // `UserInput`/`LMInput` are built and consumed entirely inside the task.
@@ -152,9 +158,10 @@ public struct MLXInferenceEngine: InferenceEngine {
                             userInput: userInput, parameters: parameters,
                             box: usePrefixCache ? promptCache : nil,
                             reasoningBudget: reasoningBudget)
-                    } else if isBatchable {
+                    } else if isBatchable && !requestHasImages {
                         // Continuous batching: concurrent plain requests decode together. Tokenize
-                        // the prompt, then submit to the shared batch engine.
+                        // the prompt, then submit to the shared batch engine. (Image requests are
+                        // excluded — the batch engine is text-only and would drop the pixels.)
                         let boxed = SendableValueBox(userInput)
                         let tokens = try await container.perform { context in
                             try await context.processor.prepare(input: boxed.consume())
