@@ -152,3 +152,17 @@ heartbeat, a final summary) so a long prefill is visible rather than a black box
 
 Possible future work: deeper drafting (block_size > 1), prefix/KV-cache reuse with MTP, multiple
 concurrent loaded models. See `.claude/plans/we-are-building-a-lovely-tiger.md`.
+
+## License
+
+Copyright © 2026 Tim Ellis, Fyrby Additive Manufacturing & Engineering.
+
+mlxz is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0) — see
+[`LICENSE`](LICENSE). In short: you may use, modify, and redistribute it, and you may run it
+commercially — **but any derivative you distribute *or offer over a network/SaaS* must be
+released under the AGPL-3.0 as well.** This keeps mlxz and its derivatives open source: it can't
+be absorbed into a closed-source commercial product. Open-source contributions are welcome.
+
+Third-party dependencies (all permissive, Apache-2.0 / MIT) are listed in
+[`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md). Model weights are downloaded at runtime and
+carry their own separate license.
