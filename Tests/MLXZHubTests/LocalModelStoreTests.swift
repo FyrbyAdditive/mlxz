@@ -86,6 +86,26 @@ import Foundation
         #expect(LocalModelStore.installedModel(at: url) == nil)
     }
 
+    @Test func hasCacheDirectoryDetectsPartialAndDeletedDownloads() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("mlxz-partial-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+
+        // A PARTIAL download: the models-- dir exists but has no snapshot/config.json yet (so it does
+        // NOT show up in installedModels()). hasCacheDirectory must still see it → retry is meaningful.
+        let partial = root.appendingPathComponent("models--mlx-community--Partial-4bit/blobs")
+        try fm.createDirectory(at: partial, withIntermediateDirectories: true)
+        try Data(count: 1024).write(to: partial.appendingPathComponent("incomplete.bin"))
+
+        let store = LocalModelStore(cacheRoots: [root])
+        #expect(store.installedModels().isEmpty, "partial (no config.json) shouldn't list as installed")
+        #expect(store.hasCacheDirectory(forRepoID: "mlx-community/Partial-4bit"),
+                "partial download's cache dir should be detected")
+
+        // A DELETED model: nothing on disk → false (so the UI drops the stale "Retry").
+        #expect(!store.hasCacheDirectory(forRepoID: "mlx-community/Deleted-4bit"))
+    }
+
     @Test func readConfigDetectsVisionFromConfigJSON() throws {
         let fm = FileManager.default
         let dir = fm.temporaryDirectory.appendingPathComponent("mlxz-cfg-\(UUID().uuidString)")

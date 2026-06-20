@@ -61,6 +61,20 @@ public struct LocalModelStore: Sendable {
         return results.filter { seen.insert($0.descriptor.repoID).inserted }
     }
 
+    /// Whether *any* cache directory exists on disk for a repo id — including a PARTIAL download that
+    /// has no `config.json` yet (so it wouldn't show up in `installedModels()`). Used to decide whether
+    /// a prior failed download still has bytes worth retrying, vs. one whose files have been deleted.
+    public func hasCacheDirectory(forRepoID repoID: String) -> Bool {
+        let fm = FileManager.default
+        let dirName = "models--" + repoID.replacingOccurrences(of: "/", with: "--")
+        for root in cacheRoots {
+            let dir = root.appendingPathComponent(dirName)
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue { return true }
+        }
+        return false
+    }
+
     /// Delete an installed model from the HF cache. `model.directory` is the snapshot revision dir
     /// (`models--org--name/snapshots/<rev>`); we remove the whole `models--org--name` root (snapshots
     /// + the shared `blobs/`) so no orphaned files remain. Returns true on success.

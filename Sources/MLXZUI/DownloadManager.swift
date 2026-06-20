@@ -60,6 +60,28 @@ public final class DownloadManager {
         tasks[repoID]?.cancel()
     }
 
+    /// Forget a download entry entirely (e.g. after the model is deleted from disk), so a stale
+    /// `.failed`/`.cancelled`/`.done` state stops driving a "Retry"/"Downloaded" affordance in the UI.
+    /// Cancels any in-flight task for the repo first.
+    public func clear(_ repoID: String) {
+        tasks[repoID]?.cancel()
+        tasks[repoID] = nil
+        downloads.removeAll { $0.id == repoID }
+    }
+
+    /// Drop terminal (`.failed`/`.cancelled`/`.done`) entries whose model is no longer on disk, as
+    /// judged by `existsOnDisk`. A partial download that the user deleted leaves a stale `.failed`
+    /// entry that would otherwise keep showing "Retry" forever in search results; this removes it so
+    /// the row reverts to a plain "Download". Active downloads are never touched.
+    public func pruneStale(existsOnDisk: (String) -> Bool) {
+        downloads.removeAll { d in
+            switch d.state {
+            case .downloading: return false               // never prune an in-flight download
+            case .done, .failed, .cancelled: return !existsOnDisk(d.id)
+            }
+        }
+    }
+
     // MARK: - State
 
     private func upsert(_ id: String, _ state: Download.State) {

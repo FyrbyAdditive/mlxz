@@ -118,6 +118,9 @@ public final class AppModel {
             await unload()
         }
         if localStore.delete(model) {
+            // Drop any lingering download entry so the search row stops offering "Retry" for a model
+            // the user has just removed from disk.
+            downloads.clear(model.descriptor.repoID)
             logStore.append("Deleted \(model.descriptor.repoID)")
         } else {
             logStore.append("Failed to delete \(model.descriptor.repoID)")
@@ -125,6 +128,14 @@ public final class AppModel {
     }
 
     // MARK: - Downloads
+
+    /// Remove stale terminal download entries (failed/cancelled/done) whose files are no longer on
+    /// disk — e.g. a partial download the user deleted — so search rows stop offering "Retry" for them.
+    public func pruneStaleDownloads() {
+        downloads.pruneStale { [localStore] repoID in
+            localStore.hasCacheDirectory(forRepoID: repoID)
+        }
+    }
 
     public func startDownload(_ repoID: String) {
         logStore.append("Downloading \(repoID)…")

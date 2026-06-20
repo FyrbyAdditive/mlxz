@@ -71,7 +71,10 @@ struct ModelLibraryView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Models")
-        .task { installed = model.installedModels() }
+        .task {
+            model.pruneStaleDownloads()   // drop "Retry" for partials the user has since deleted
+            installed = model.installedModels()
+        }
         .confirmationDialog(
             "Delete \(pendingDelete?.displayName ?? "model")?",
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
@@ -192,6 +195,7 @@ struct ModelLibraryView: View {
     }
 
     private func runSearch() {
+        model.pruneStaleDownloads()   // so deleted partials don't show "Retry" in fresh results
         isSearching = true
         Task {
             defer { isSearching = false }
