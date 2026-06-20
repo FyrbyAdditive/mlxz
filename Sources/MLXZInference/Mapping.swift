@@ -108,15 +108,24 @@ extension MLXInferenceEngine {
     }
 
     /// Map our `SamplingParameters` onto the package's `GenerateParameters`, applying perf options.
+    ///
+    /// `repoID` is used to suppress KV-cache quantization for models whose attention uses sinks
+    /// (e.g. gpt-oss): the quantized-attention kernel has no sink support and hard-`fatalError`s on
+    /// the first decode step, crashing the process. For those models we force a full-precision cache.
     static func mapParameters(
         _ sampling: SamplingParameters,
         maxTokens: Int?,
-        perf: EnginePerfOptions = .default
+        perf: EnginePerfOptions = .default,
+        repoID: String = ""
     ) -> GenerateParameters {
+        // Disable KV quantization for sink-attention models — the fork's quantized SDPA path is
+        // unimplemented for non-zero sinks and traps. Full precision is correct (and the attention KV
+        // is a minor memory fraction anyway), so this is a safe, model-targeted fallback.
+        let kvBits = usesAttentionSinks(repoID) ? nil : perf.kvBits
         var params = GenerateParameters(
             maxTokens: maxTokens,
             maxKVSize: perf.maxKVSize,
-            kvBits: perf.kvBits,
+            kvBits: kvBits,
             kvGroupSize: perf.kvGroupSize,
             quantizedKVStart: perf.quantizedKVStart,
             temperature: sampling.temperature,
@@ -125,6 +134,14 @@ extension MLXInferenceEngine {
         if let topK = sampling.topK { params.topK = topK }
         if let rp = sampling.repetitionPenalty { params.repetitionPenalty = rp }
         return params
+    }
+
+    /// Whether a model's attention uses sinks (a learned per-head bias added to the softmax). The
+    /// quantized KV-cache attention kernel does not support sinks and traps if asked to, so KV
+    /// quantization must be disabled for these. Currently the gpt-oss family.
+    static func usesAttentionSinks(_ repoID: String) -> Bool {
+        let id = repoID.lowercased()
+        return id.contains("gpt-oss") || id.contains("gpt_oss") || id.contains("gptoss")
     }
 
     /// Map the package's native `ToolCall` to ours, serializing arguments back to JSON text.

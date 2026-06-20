@@ -149,27 +149,13 @@ public struct ToolCallParser: Sendable {
         if trimmed.contains("<function=") {
             return parseXMLCallBody(trimmed)
         }
-        guard let data = trimmed.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let name = obj["name"] as? String
-        else { return nil }
-
-        let argumentsJSON: String
-        switch obj["arguments"] {
-        case let str as String:
-            // Some templates emit arguments pre-serialized as a JSON string; pass through.
-            argumentsJSON = str
-        case let container as [String: Any]:
-            argumentsJSON = Self.compactJSON(container) ?? "{}"
-        case let array as [Any]:
-            argumentsJSON = Self.compactJSON(array) ?? "{}"
-        default:
-            // Missing, null, or a scalar (which JSONSerialization can't serialize at top level).
-            argumentsJSON = "{}"
-        }
-
         callIndex += 1
-        return ToolCall(id: "\(idPrefix)_\(callIndex)", name: name, argumentsJSON: argumentsJSON)
+        // Shared name/arguments JSON parsing (also normalizes smart quotes). nil if not valid / no name.
+        guard let call = Self.parseNameArgumentsJSON(trimmed, id: "\(idPrefix)_\(callIndex)") else {
+            callIndex -= 1
+            return nil
+        }
+        return call
     }
 
     /// Parse the Qwen XML call body: `<function=NAME>` then zero or more
@@ -203,7 +189,8 @@ public struct ToolCallParser: Sendable {
     }
 
     /// Coerce a parameter string to a JSON-faithful scalar: int, double, bool, or string fallback.
-    private static func coerceScalar(_ s: String) -> Any {
+    /// (Module-internal so sibling format parsers — e.g. `GLM4OutputParser` — can reuse it.)
+    static func coerceScalar(_ s: String) -> Any {
         if let i = Int(s) { return i }
         if let d = Double(s) { return d }
         if s == "true" { return true }
@@ -212,11 +199,50 @@ public struct ToolCallParser: Sendable {
     }
 
     /// Serialize a JSON container (object or array) to compact text, or nil on failure.
-    private static func compactJSON(_ value: Any) -> String? {
+    static func compactJSON(_ value: Any) -> String? {
         guard JSONSerialization.isValidJSONObject(value),
               let data = try? JSONSerialization.data(withJSONObject: value),
               let str = String(data: data, encoding: .utf8)
         else { return nil }
         return str
+    }
+
+    /// Normalize a model-emitted JSON snippet before parsing: map smart/curly quotes to straight
+    /// quotes and trim surrounding whitespace. Some models (notably gpt-oss/harmony) emit `“…”`/`‘…’`
+    /// in tool-call arguments, which `JSONSerialization` rejects — this is the fix for the observed
+    /// `web_search` "could not parse arguments" failure. Shared by all format parsers.
+    static func normalizeJSONText(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{201C}", with: "\"")   // “ left double
+         .replacingOccurrences(of: "\u{201D}", with: "\"")   // ” right double
+         .replacingOccurrences(of: "\u{201E}", with: "\"")   // „ low double
+         .replacingOccurrences(of: "\u{2018}", with: "'")    // ‘ left single
+         .replacingOccurrences(of: "\u{2019}", with: "'")    // ’ right single
+         .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Parse a JSON tool-call body of the canonical `{"name": ..., "arguments": {...}}` shape into a
+    /// `ToolCall`, applying `normalizeJSONText` first. Returns the compact arguments JSON exactly as
+    /// `parseCallBody` does (string args passed through, object/array compacted, else `{}`). Shared so
+    /// harmony and other formats produce identical argument serialization. Returns nil if not valid
+    /// JSON or missing a name.
+    static func parseNameArgumentsJSON(_ body: String, id: String) -> ToolCall? {
+        let trimmed = normalizeJSONText(body)
+        guard let data = trimmed.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = obj["name"] as? String
+        else { return nil }
+        return ToolCall(id: id, name: name, argumentsJSON: argumentsJSONString(from: obj["arguments"]))
+    }
+
+    /// Build the compact arguments-JSON string from a decoded `arguments` value, matching the rules in
+    /// `parseCallBody`: a pre-serialized string passes through; an object/array is compacted; anything
+    /// else (missing/null/scalar) becomes `{}`.
+    static func argumentsJSONString(from arguments: Any?) -> String {
+        switch arguments {
+        case let str as String: return str
+        case let container as [String: Any]: return compactJSON(container) ?? "{}"
+        case let array as [Any]: return compactJSON(array) ?? "{}"
+        default: return "{}"
+        }
     }
 }

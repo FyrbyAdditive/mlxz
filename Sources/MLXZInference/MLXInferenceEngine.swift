@@ -35,6 +35,12 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// Captured once at load to avoid an async probe per request.
     private let isBatchable: Bool
 
+    /// `config.json` `model_type` (e.g. "gpt_oss", "qwen3_5"), if read at load. Refines output-format
+    /// detection; nil is fine (repo id alone classifies the known families).
+    private let modelType: String?
+    /// The reasoning/tool-call output format this model uses, decided once at load.
+    private let outputFormat: OutputFormat
+
     /// Concurrency limit the gate should apply for this model: serialize (1) the single-sequence
     /// shared-cache paths so the prefix cache holds; allow `maxBatch` only when the batch engine is
     /// actually used (batchable AND not running MTP). Computed once from load-time facts.
@@ -45,13 +51,17 @@ public struct MLXInferenceEngine: InferenceEngine {
         capabilities: ModelCapabilities,
         container: ModelContainer,
         perf: EnginePerfOptions = .default,
-        isBatchable: Bool = false
+        isBatchable: Bool = false,
+        modelType: String? = nil
     ) {
         self.descriptor = descriptor
         self.capabilities = capabilities
         self.container = container
         self.perf = perf
         self.isBatchable = isBatchable
+        self.modelType = modelType
+        self.outputFormat = OutputParserFactory.detectFormat(
+            repoID: descriptor.repoID, modelType: modelType, capabilities: capabilities)
         self.promptCache = PromptCacheBox(
             prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0,
             prefixCacheBytesMB: perf.prefixCacheBytesMB)
@@ -66,7 +76,8 @@ public struct MLXInferenceEngine: InferenceEngine {
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
-        let parameters = Self.mapParameters(request.sampling, maxTokens: request.maxTokens, perf: perf)
+        let parameters = Self.mapParameters(
+            request.sampling, maxTokens: request.maxTokens, perf: perf, repoID: descriptor.repoID)
         let modelID = descriptor.repoID
         let container = self.container
         let promptCache = self.promptCache
@@ -100,11 +111,11 @@ public struct MLXInferenceEngine: InferenceEngine {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 continuation.yield(.started(.init(modelID: modelID)))
-                // Split the model's <think>…</think> chain-of-thought out of the text BEFORE
-                // tool-call parsing, so reasoning is surfaced on its own channel (clients render it
-                // separately) and never leaks into the visible content or gets mis-parsed as a tool
-                // call. Visible text then flows through the tool-call fallback parser as before.
-                var fallback = ToolCallParser()
+                // One streaming parser per request, selected for the model's output format
+                // (`OutputParserFactory`). It splits the raw token stream into reasoning, visible text,
+                // and tool calls — subsuming the old `ThinkParser`+`ToolCallParser` pair so all model
+                // families (Qwen/Hermes, gpt-oss harmony, Mistral, Llama3, GLM4) parse correctly. The
+                // default (`qwenHermes`) reproduces the previous behavior exactly.
                 var sawToolCall = false  // true if ANY tool call (native or parsed from text) was emitted
                 do {
                     let tools = request.tools.map { $0.map(Self.mapTool) }
@@ -116,15 +127,18 @@ public struct MLXInferenceEngine: InferenceEngine {
                     // (`enable_thinking: false` → the template emits an empty `<think></think>` and
                     // goes straight to the answer/tool-call) so the model acts instead of musing.
                     let thinkingDisabled = (tools?.isEmpty == false)
+                    // `enable_thinking` is a Qwen chat-template kwarg — only send it to formats that
+                    // understand it (others would choke or ignore it).
                     let additionalContext: [String: any Sendable]? =
-                        thinkingDisabled ? ["enable_thinking": false] : nil
-                    // When thinking is ON, the chat template pre-opens `<think>` (no opening tag in
-                    // the stream) and some checkpoints write reasoning as plain prose that closes
-                    // `</think>` only late — so start the parser INSIDE the think block to route that
-                    // prose to reasoning regardless of chunk timing. When thinking is disabled (tools
-                    // present), the template emits an empty `<think></think>` and goes straight to the
-                    // answer, so the parser starts in `.visible`.
-                    var think = ThinkParser(startInsideThink: !thinkingDisabled)
+                        (thinkingDisabled && outputFormat.supportsEnableThinkingKwarg)
+                        ? ["enable_thinking": false] : nil
+                    // `startInsideThink` models Qwen's pre-opened `<think>` (the stream starts inside
+                    // reasoning, only emits the closing tag). Only Qwen pre-opens; harmony etc. emit an
+                    // explicit reasoning channel, so they start outside.
+                    let startInsideThink =
+                        outputFormat.prefersPreOpenedThink && !thinkingDisabled
+                    var parser = OutputParserFactory.make(
+                        format: outputFormat, startInsideThink: startInsideThink)
                     // Reasoning-token budget (hard cap on the <think> block). Only meaningful when
                     // thinking is ON; per-request override else the engine default. 0 = uncapped.
                     let reasoningBudget = thinkingDisabled
@@ -167,7 +181,7 @@ public struct MLXInferenceEngine: InferenceEngine {
                             try await context.processor.prepare(input: boxed.consume())
                                 .text.tokens.asArray(Int32.self)
                         }
-                        let stopIds = await Self.stopTokenIds(container)
+                        let stopIds = await Self.stopTokenIds(container, format: outputFormat)
                         stream = await batchEngine.submit(
                             promptTokens: tokens,
                             maxTokens: parameters.maxTokens ?? 2048,
@@ -185,19 +199,16 @@ public struct MLXInferenceEngine: InferenceEngine {
                         if Task.isCancelled { break }
                         switch item {
                         case .chunk(let text):
-                            let split = think.consume(text)
-                            if !split.reasoning.isEmpty {
-                                continuation.yield(.reasoningDelta(split.reasoning))
+                            let p = parser.consume(text)
+                            if !p.reasoning.isEmpty {
+                                continuation.yield(.reasoningDelta(p.reasoning))
                             }
-                            if !split.visibleText.isEmpty {
-                                let parsed = fallback.consume(split.visibleText)
-                                if !parsed.visibleText.isEmpty {
-                                    continuation.yield(.textDelta(parsed.visibleText))
-                                }
-                                for call in parsed.toolCalls {
-                                    sawToolCall = true
-                                    continuation.yield(.toolCall(call))
-                                }
+                            if !p.visibleText.isEmpty {
+                                continuation.yield(.textDelta(p.visibleText))
+                            }
+                            for call in p.toolCalls {
+                                sawToolCall = true
+                                continuation.yield(.toolCall(call))
                             }
 
                         case .toolCall(let nativeCall):
@@ -205,14 +216,10 @@ public struct MLXInferenceEngine: InferenceEngine {
                             continuation.yield(.toolCall(Self.mapNativeToolCall(nativeCall)))
 
                         case .info(let info):
-                            let thinkTail = think.finish()
-                            if !thinkTail.reasoning.isEmpty {
-                                continuation.yield(.reasoningDelta(thinkTail.reasoning))
+                            let tail = parser.finish()
+                            if !tail.reasoning.isEmpty {
+                                continuation.yield(.reasoningDelta(tail.reasoning))
                             }
-                            var tail = fallback.consume(thinkTail.visibleText)
-                            let flushed = fallback.finish()
-                            tail.visibleText += flushed.visibleText
-                            tail.toolCalls += flushed.toolCalls
                             if !tail.visibleText.isEmpty {
                                 continuation.yield(.textDelta(tail.visibleText))
                             }
@@ -242,12 +249,19 @@ public struct MLXInferenceEngine: InferenceEngine {
     }
 
     /// The stop-token id set (model EOS + tokenizer EOS + extra EOS strings) for the batch engine.
-    static func stopTokenIds(_ container: ModelContainer) async -> Set<Int> {
+    /// For the harmony format, also include `<|return|>` (assistant EOS) and `<|call|>` (end of a tool
+    /// call) so generation halts at a turn/tool boundary instead of running on past it.
+    static func stopTokenIds(_ container: ModelContainer, format: OutputFormat = .qwenHermes) async -> Set<Int> {
         await container.perform { context in
             var ids = context.configuration.eosTokenIds
             if let t = context.tokenizer.eosTokenId { ids.insert(t) }
             for tok in context.configuration.extraEOSTokens {
                 if let id = context.tokenizer.convertTokenToId(tok) { ids.insert(id) }
+            }
+            if format == .harmony {
+                for tok in ["<|return|>", "<|call|>"] {
+                    if let id = context.tokenizer.convertTokenToId(tok) { ids.insert(id) }
+                }
             }
             return ids
         }

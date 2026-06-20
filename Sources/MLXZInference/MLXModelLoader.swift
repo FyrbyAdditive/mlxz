@@ -83,6 +83,11 @@ public struct MLXModelLoader: ModelLoading {
         var capabilities = ModelCapabilityDetector.detect(
             repoID: descriptor.repoID, hasVisionConfig: isVisionModel)
 
+        // Read config.json `model_type` (e.g. "gpt_oss") to refine output-format detection. The
+        // snapshot is already cached (the container just loaded it), so this is a local read.
+        let modelType = await Self.readModelType(
+            repoID: descriptor.repoID, revision: descriptor.revision ?? "main")
+
         // Draft-model MTP: download the standalone drafter and attach it to the backbone's MTP head.
         if let draftModelID {
             progress(LoadProgress(fraction: nil, detail: "downloading MTP drafter \(draftModelID)…"))
@@ -107,8 +112,22 @@ public struct MLXModelLoader: ModelLoading {
             capabilities: capabilities,
             container: container,
             perf: perf,
-            isBatchable: isBatchable
+            isBatchable: isBatchable,
+            modelType: modelType
         )
+    }
+
+    /// Read `model_type` from a model's `config.json` (the snapshot is expected to be cached). Used to
+    /// refine output-format detection. nil on any miss — the format selector falls back to the repo id.
+    static func readModelType(repoID: String, revision: String) async -> String? {
+        guard let repo = Repo.ID(rawValue: repoID),
+              let dir = try? await HubClient().downloadSnapshot(of: repo, revision: revision)
+        else { return nil }
+        let configURL = dir.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj["model_type"] as? String
     }
 
     /// If the model's `tokenizer_config.json` has no `chat_template` but the snapshot ships a
