@@ -56,7 +56,8 @@ struct ModelLibraryView: View {
                     HStack {
                         VStack(alignment: .leading) {
                             Text(entry.displayName)
-                            Text("↓ \(entry.downloads)  ·  \(entry.quantization ?? "—")")
+                            Text("↓ \(entry.downloads)  ·  \(entry.quantization ?? "—")"
+                                + (entry.sizeString.map { "  ·  \($0)" } ?? ""))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         CapabilityBadges(capabilities: entry.capabilities, loaded: isLoaded(entry.id))

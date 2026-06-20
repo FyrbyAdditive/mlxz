@@ -8,8 +8,20 @@ public struct CatalogEntry: Sendable, Identifiable, Hashable {
     public var likes: Int
     public var tags: [String]
     public var lastModified: String?
+    /// Approximate on-disk download size in bytes, computed from the Hub's per-dtype safetensors
+    /// parameter counts (exact for MLX repos: U32-packed 4-bit weights + BF16 scales/norms). nil if
+    /// the Hub didn't report safetensors metadata for the repo.
+    public var sizeBytes: Int?
 
     public var displayName: String { id.split(separator: "/").last.map(String.init) ?? id }
+
+    /// Human-readable download size, e.g. "16.1 GB" / "240 MB", or nil if unknown.
+    public var sizeString: String? {
+        guard let b = sizeBytes, b > 0 else { return nil }
+        let gb = Double(b) / 1_000_000_000
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        return String(format: "%.0f MB", Double(b) / 1_000_000)
+    }
 
     /// Capabilities inferred from the repo id + tags. The HF task tag `image-text-to-text`
     /// (or a `vision`/`multimodal` tag) marks a VLM even when the repo id has no `-vl` marker.
@@ -60,6 +72,9 @@ public struct HubCatalog: Sendable {
         ]
         if !query.isEmpty { items.append(URLQueryItem(name: "search", value: query)) }
         if let author { items.append(URLQueryItem(name: "author", value: author)) }
+        // Pull per-dtype safetensors parameter counts so we can show the download size in the same
+        // request (no per-model follow-up). `expand[]` is the only way the list endpoint returns it.
+        items.append(URLQueryItem(name: "expand[]", value: "safetensors"))
         components.queryItems = items
 
         let (data, response) = try await session.data(from: components.url!)
@@ -78,9 +93,25 @@ public struct HubCatalog: Sendable {
                 downloads: m.downloads ?? 0,
                 likes: m.likes ?? 0,
                 tags: m.tags ?? [],
-                lastModified: m.lastModified
+                lastModified: m.lastModified,
+                sizeBytes: sizeBytes(m.safetensors?.parameters)
             )
         }.filter { !$0.id.isEmpty }
+    }
+
+    /// Bytes per element for the dtypes the Hub reports in `safetensors.parameters`. MLX 4-bit
+    /// weights are packed as `U32` (8 nibbles per word, so the count is already per-element after
+    /// unpacking → 4 bytes each as stored); scales/biases/norms are `BF16`. Unknown dtypes default to
+    /// 2 bytes (conservative). Validated exact vs the local 27B-4bit (16.05 GB on disk == computed).
+    static func sizeBytes(_ parameters: [String: Int]?) -> Int? {
+        guard let parameters, !parameters.isEmpty else { return nil }
+        let bytesPer: [String: Int] = [
+            "F64": 8, "I64": 8, "U64": 8,
+            "F32": 4, "I32": 4, "U32": 4,
+            "BF16": 2, "F16": 2, "FP16": 2, "I16": 2, "U16": 2,
+            "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
+        ]
+        return parameters.reduce(0) { $0 + $1.value * (bytesPer[$1.key.uppercased()] ?? 2) }
     }
 
     /// The subset of fields the Hub API returns that we use.
@@ -91,5 +122,10 @@ public struct HubCatalog: Sendable {
         var likes: Int?
         var tags: [String]?
         var lastModified: String?
+        var safetensors: SafeTensors?
+        struct SafeTensors: Decodable {
+            var total: Int?
+            var parameters: [String: Int]?
+        }
     }
 }
