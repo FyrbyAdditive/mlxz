@@ -70,6 +70,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Flag(name: .long, help: "Print the VS Code Copilot model-config snippet and exit.")
     var printCopilotConfig: Bool = false
 
+    @Flag(name: .long, help: "Download --model via the exact GUI download path, printing live progress ticks, then exit. Verifies progress is reported through large (Xet) files.")
+    var downloadTest: Bool = false
+
     // MARK: - Benchmark mode (Phase 0 harness)
 
     @Flag(name: .long, help: "Run a fixed-prompt benchmark (no server) and print median decode/TTFT/memory metrics, then exit. Reuses the exact server load + generate path so perf knobs are exercised identically.")
@@ -85,6 +88,24 @@ struct MLXZServe: AsyncParsableCommand {
     var iters: Int = 3
 
     func run() async throws {
+        if downloadTest {
+            // Exercise the exact GUI download path (MLXModelDownloader) and print progress ticks so we
+            // can see continuous progress through large (Xet-transported) safetensors files.
+            let dl = MLXModelDownloader()
+            var lastPct = -1
+            try await dl.download(ModelDescriptor(repoID: model)) { @MainActor p in
+                let pct = Int(p.fraction * 100)
+                if pct != lastPct {
+                    lastPct = pct
+                    let mb = Double(p.completedBytes) / 1_000_000
+                    let tot = Double(p.totalBytes) / 1_000_000
+                    FileHandle.standardError.write(Data(
+                        String(format: "[DL] %3d%%  %.1f / %.1f MB\n", pct, mb, tot).utf8))
+                }
+            }
+            FileHandle.standardError.write(Data("[DL] done\n".utf8))
+            return
+        }
         // Force the per-step decode diagnostic on for the benchmark before any model/MTPSession is
         // touched (MTPSession reads MLXZ_DECODE_DIAG once at static init).
         if bench { setenv("MLXZ_DECODE_DIAG", "1", 1) }
