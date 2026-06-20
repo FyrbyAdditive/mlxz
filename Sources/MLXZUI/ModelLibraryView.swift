@@ -184,30 +184,11 @@ struct ModelLibraryView: View {
         }
     }
 
-    /// A Download / progress / cancel control reflecting the DownloadManager state.
-    @ViewBuilder
+    /// The Download / progress / cancel control for a row, as a dedicated child view (see
+    /// `DownloadControl`) so it observes the `DownloadManager` directly and keeps re-rendering even
+    /// after this `ModelLibraryView` is torn down and recreated (which happens on every tab switch).
     private func downloadControl(for repoID: String) -> some View {
-        let download = model.downloads.downloads.first { $0.id == repoID }
-        switch download?.state {
-        case .downloading(let fraction, let completed, let total):
-            HStack(spacing: 6) {
-                ProgressView(value: fraction).frame(width: 60)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("\(Int(fraction * 100))%").font(.caption).monospacedDigit()
-                    if total > 0 {
-                        Text("\(byteString(completed)) / \(byteString(total))")
-                            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
-                    }
-                }
-                Button("✕") { model.cancelDownload(repoID) }.buttonStyle(.borderless)
-            }
-        case .done:
-            Label("Downloaded", systemImage: "checkmark.circle").labelStyle(.iconOnly).foregroundStyle(.green)
-        case .failed:
-            Button("Retry") { model.startDownload(repoID) }.foregroundStyle(.red)
-        default:
-            Button("Download") { model.startDownload(repoID) }
-        }
+        DownloadControl(downloads: model.downloads, repoID: repoID)
     }
 
     private func runSearch() {
@@ -243,5 +224,41 @@ struct CapabilityBadges: View {
             .padding(.horizontal, 5).padding(.vertical, 2)
             .background(color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)
+    }
+}
+
+/// Download / progress / cancel control for one repo. A dedicated `View` that observes the
+/// `@Observable DownloadManager` directly, so it re-renders on every progress tick and — crucially —
+/// keeps working after the parent `ModelLibraryView` is destroyed/recreated (e.g. switching tabs and
+/// back), since its observation is rebound to the (stable, shared) manager when it appears.
+struct DownloadControl: View {
+    let downloads: DownloadManager
+    let repoID: String
+
+    var body: some View {
+        switch downloads.downloads.first(where: { $0.id == repoID })?.state {
+        case .downloading(let fraction, let completed, let total):
+            HStack(spacing: 6) {
+                ProgressView(value: fraction).frame(width: 60)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("\(Int(fraction * 100))%").font(.caption).monospacedDigit()
+                    if total > 0 {
+                        Text("\(byteString(completed)) / \(byteString(total))")
+                            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                }
+                Button("✕") { downloads.cancel(repoID) }.buttonStyle(.borderless)
+            }
+        case .done:
+            Label("Downloaded", systemImage: "checkmark.circle").labelStyle(.iconOnly).foregroundStyle(.green)
+        case .failed:
+            Button("Retry") { downloads.start(repoID) }.foregroundStyle(.red)
+        default:
+            Button("Download") { downloads.start(repoID) }
+        }
+    }
+
+    private func byteString(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
