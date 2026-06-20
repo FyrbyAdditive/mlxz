@@ -75,6 +75,11 @@ struct ModelLibraryView: View {
             model.pruneStaleDownloads()   // drop "Retry" for partials the user has since deleted
             installed = model.installedModels()
         }
+        // When a download finishes, re-enumerate so the new model shows in the Installed list above
+        // immediately (previously it only appeared after switching tabs and back).
+        .onChange(of: model.downloads.completedCount) {
+            installed = model.installedModels()
+        }
         .confirmationDialog(
             "Delete \(pendingDelete?.displayName ?? "model")?",
             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),

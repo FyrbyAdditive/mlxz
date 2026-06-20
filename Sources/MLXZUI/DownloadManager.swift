@@ -31,6 +31,13 @@ public final class DownloadManager {
         return false
     }
 
+    /// Number of downloads that have finished successfully. A view can observe this (it's derived from
+    /// the `@Observable` `downloads`) and refresh its installed-models list when it increases — so a
+    /// newly-downloaded model appears in the Installed list immediately, not only after a tab switch.
+    public var completedCount: Int {
+        downloads.reduce(0) { $0 + ($1.state == .done ? 1 : 0) }
+    }
+
     public func start(_ repoID: String) {
         guard tasks[repoID] == nil else { return }
         upsert(repoID, .downloading(fraction: 0, completedBytes: 0, totalBytes: 0))
