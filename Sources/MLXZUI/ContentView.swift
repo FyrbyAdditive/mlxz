@@ -13,6 +13,7 @@ public struct ContentView: View {
     enum Section: String, CaseIterable, Identifiable {
         case models = "Models"
         case server = "Server"
+        case performance = "Performance"
         case playground = "Playground"
         case logs = "Logs"
         var id: String { rawValue }
@@ -20,6 +21,7 @@ public struct ContentView: View {
             switch self {
             case .models: "shippingbox"
             case .server: "network"
+            case .performance: "speedometer"
             case .playground: "bubble.left.and.bubble.right"
             case .logs: "text.alignleft"
             }
@@ -36,6 +38,7 @@ public struct ContentView: View {
             switch selection {
             case .models: ModelLibraryView(model: model)
             case .server: ServerControlView(model: model)
+            case .performance: PerformanceView(model: model)
             case .playground: PlaygroundView(model: model)
             case .logs: LogsView(model: model)
             }
