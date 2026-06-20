@@ -61,6 +61,24 @@ public struct LocalModelStore: Sendable {
         return results.filter { seen.insert($0.descriptor.repoID).inserted }
     }
 
+    /// Delete an installed model from the HF cache. `model.directory` is the snapshot revision dir
+    /// (`models--org--name/snapshots/<rev>`); we remove the whole `models--org--name` root (snapshots
+    /// + the shared `blobs/`) so no orphaned files remain. Returns true on success.
+    @discardableResult
+    public func delete(_ model: InstalledModel) -> Bool {
+        let fm = FileManager.default
+        // revision -> snapshots -> models--org--name
+        let modelRoot = model.directory.deletingLastPathComponent().deletingLastPathComponent()
+        // Safety: only delete a directory that is actually an HF model cache entry.
+        guard modelRoot.lastPathComponent.hasPrefix("models--") else { return false }
+        do {
+            try fm.removeItem(at: modelRoot)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Parse a single `models--org--name` cache directory into an `InstalledModel`, if it holds
     /// a snapshot with a `config.json`.
     static func installedModel(at modelDir: URL) -> InstalledModel? {

@@ -11,6 +11,7 @@ struct ModelLibraryView: View {
     @State private var installed: [InstalledModel] = []
     @State private var isSearching = false
     @State private var pasteRepoID = ""
+    @State private var pendingDelete: InstalledModel?
 
     var body: some View {
         Form {
@@ -71,6 +72,22 @@ struct ModelLibraryView: View {
         .formStyle(.grouped)
         .navigationTitle("Models")
         .task { installed = model.installedModels() }
+        .confirmationDialog(
+            "Delete \(pendingDelete?.displayName ?? "model")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { m in
+            Button("Delete \(byteString(m.sizeBytes))", role: .destructive) {
+                Task {
+                    await model.deleteModel(m)
+                    installed = model.installedModels()
+                    pendingDelete = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { m in
+            Text("This permanently removes \(m.descriptor.repoID) from disk. You can re-download it later.")
+        }
     }
 
     /// Whether `repoID` is the currently-loaded model.
@@ -130,6 +147,11 @@ struct ModelLibraryView: View {
             CapabilityBadges(capabilities: m.capabilities, loaded: isLoaded(m.descriptor.repoID))
             Spacer()
             loadControl(for: m.descriptor.repoID)
+            Button(role: .destructive) { pendingDelete = m } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless).foregroundStyle(.red)
+            .help("Delete \(m.displayName) from disk (\(byteString(m.sizeBytes)))")
         }
         .padding(.leading, indented ? 16 : 0)
     }
@@ -167,9 +189,16 @@ struct ModelLibraryView: View {
     private func downloadControl(for repoID: String) -> some View {
         let download = model.downloads.downloads.first { $0.id == repoID }
         switch download?.state {
-        case .downloading(let fraction):
-            HStack(spacing: 4) {
+        case .downloading(let fraction, let completed, let total):
+            HStack(spacing: 6) {
                 ProgressView(value: fraction).frame(width: 60)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("\(Int(fraction * 100))%").font(.caption).monospacedDigit()
+                    if total > 0 {
+                        Text("\(byteString(completed)) / \(byteString(total))")
+                            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                }
                 Button("✕") { model.cancelDownload(repoID) }.buttonStyle(.borderless)
             }
         case .done:

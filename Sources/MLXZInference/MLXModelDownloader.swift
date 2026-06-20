@@ -13,16 +13,21 @@ public struct MLXModelDownloader: ModelDownloading {
 
     public func download(
         _ descriptor: ModelDescriptor,
-        progress: @escaping @Sendable (Double) -> Void
+        progress: @escaping @MainActor @Sendable (DownloadProgress) -> Void
     ) async throws {
         guard let repo = Repo.ID(rawValue: descriptor.repoID) else {
             throw APIError(kind: .invalidRequest, message: "Invalid repo id '\(descriptor.repoID)'", code: "invalid_repo_id")
         }
+        // HubClient's progressHandler is already @MainActor-isolated; forward fraction + byte counts
+        // synchronously on the main actor (no extra Task hop) so the UI updates reliably.
         _ = try await hub.downloadSnapshot(
             of: repo,
             revision: descriptor.revision ?? "main",
-            progressHandler: { p in
-                progress(p.fractionCompleted)
+            progressHandler: { @MainActor p in
+                progress(DownloadProgress(
+                    fraction: p.fractionCompleted,
+                    completedBytes: p.completedUnitCount,
+                    totalBytes: p.totalUnitCount))
             }
         )
     }

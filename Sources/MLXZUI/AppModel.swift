@@ -111,6 +111,19 @@ public final class AppModel {
         localStore.installedModels()
     }
 
+    /// Delete an installed model from the local cache. If it's the currently-loaded model, unload it
+    /// first so we don't yank files out from under the running engine.
+    public func deleteModel(_ model: InstalledModel) async {
+        if modelState.loadedDescriptor?.repoID == model.descriptor.repoID {
+            await unload()
+        }
+        if localStore.delete(model) {
+            logStore.append("Deleted \(model.descriptor.repoID)")
+        } else {
+            logStore.append("Failed to delete \(model.descriptor.repoID)")
+        }
+    }
+
     // MARK: - Downloads
 
     public func startDownload(_ repoID: String) {

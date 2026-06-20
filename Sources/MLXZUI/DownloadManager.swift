@@ -9,7 +9,7 @@ import MLXZCore
 public final class DownloadManager {
     public struct Download: Identifiable, Sendable {
         public enum State: Sendable, Equatable {
-            case downloading(fraction: Double)
+            case downloading(fraction: Double, completedBytes: Int64, totalBytes: Int64)
             case done
             case failed(String)
             case cancelled
@@ -33,20 +33,25 @@ public final class DownloadManager {
 
     public func start(_ repoID: String) {
         guard tasks[repoID] == nil else { return }
-        upsert(repoID, .downloading(fraction: 0))
+        upsert(repoID, .downloading(fraction: 0, completedBytes: 0, totalBytes: 0))
 
         let downloader = self.downloader
         let descriptor = ModelDescriptor(repoID: repoID)
-        tasks[repoID] = Task { [weak self] in
+        // @MainActor task: the actual network I/O runs off-main inside downloadSnapshot; we only need
+        // the main actor for the state mutations. Progress fires on the main actor and updates
+        // synchronously so SwiftUI reliably re-renders (the old detached `Task { @MainActor }` hop got
+        // coalesced/dropped, which is why the bar only moved "sometimes").
+        tasks[repoID] = Task { @MainActor [weak self] in
             do {
-                try await downloader.download(descriptor) { fraction in
-                    Task { @MainActor in self?.upsert(repoID, .downloading(fraction: fraction)) }
+                try await downloader.download(descriptor) { @MainActor p in
+                    self?.upsert(repoID, .downloading(
+                        fraction: p.fraction, completedBytes: p.completedBytes, totalBytes: p.totalBytes))
                 }
-                await MainActor.run { self?.finish(repoID, .done) }
+                self?.finish(repoID, .done)
             } catch is CancellationError {
-                await MainActor.run { self?.finish(repoID, .cancelled) }
+                self?.finish(repoID, .cancelled)
             } catch {
-                await MainActor.run { self?.finish(repoID, .failed(String(describing: error))) }
+                self?.finish(repoID, .failed(String(describing: error)))
             }
         }
     }
