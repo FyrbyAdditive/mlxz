@@ -71,7 +71,7 @@ if includeMLX {
         .package(
             name: "mlx-swift-lm",
             url: "https://github.com/FyrbyAdditive/mlx-swift-lm-mtp.git",
-            revision: "7f20baacb68e213ad74cfbb691793efca48f7698"),
+            revision: "dc9d4d539445f99543e434377391502280d8bb3b"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
     ]
