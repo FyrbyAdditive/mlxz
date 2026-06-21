@@ -43,17 +43,26 @@ struct ServerControlView: View {
             }
 
             Section {
+                Toggle("Start server automatically on launch", isOn: $model.autoStartServer)
+            } footer: {
+                Text("The server starts when the app opens, using the binding above. "
+                    + "It can run without a model loaded — requests return a \"no model loaded\" "
+                    + "error until you load one.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
                 HStack {
                     if model.serverRunning {
                         Button("Stop Server", role: .destructive) { Task { await model.stopServer() } }
                     } else {
                         Button("Start Server") { Task { await model.startServer() } }
-                            .disabled(model.modelState.loadedDescriptor == nil)
                     }
                 }
             } footer: {
                 if model.modelState.loadedDescriptor == nil {
-                    Text("Load a model before starting the server.")
+                    Text("No model is loaded — the server will respond with a \"no model loaded\" "
+                        + "error until you load one from the Models tab.")
                 }
             }
 

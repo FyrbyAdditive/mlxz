@@ -29,11 +29,24 @@ public final class ServerMetrics {
 @MainActor
 @Observable
 public final class AppModel {
-    // Server config (bound to the UI).
-    public var host: String = "127.0.0.1"
-    public var port: Int = 8080
-    public var bindLAN: Bool = false
-    public var apiKey: String = ""
+    // Server config (bound to the UI), persisted to UserDefaults so an auto-started server uses the
+    // user's actual binding across launches.
+    public var host: String = "127.0.0.1" {
+        didSet { defaults.set(host, forKey: Keys.host) }
+    }
+    public var port: Int = 8080 {
+        didSet { defaults.set(port, forKey: Keys.port) }
+    }
+    public var bindLAN: Bool = false {
+        didSet { defaults.set(bindLAN, forKey: Keys.bindLAN) }
+    }
+    public var apiKey: String = "" {
+        didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
+    }
+    /// Start the server automatically when the app launches (once the binding is restored). Persisted.
+    public var autoStartServer: Bool = false {
+        didSet { defaults.set(autoStartServer, forKey: Keys.autoStartServer) }
+    }
 
     // Observable state.
     public private(set) var modelState: ModelManager.State = .empty
@@ -57,6 +70,15 @@ public final class AppModel {
     private let server: InferenceServer
     private let logger = Logger(label: "mlxz.app")
     private var memoryMonitor: MemoryPressureMonitor?
+    private let defaults: UserDefaults
+
+    private enum Keys {
+        static let host = "server.host"
+        static let port = "server.port"
+        static let bindLAN = "server.bindLAN"
+        static let apiKey = "server.apiKey"
+        static let autoStartServer = "server.autoStart"
+    }
 
     /// User-facing performance settings (KV bits, prefix-cache slots, snapshot block), persisted and
     /// applied on the next model load via the loader's perf provider.
@@ -66,8 +88,17 @@ public final class AppModel {
         loader: any ModelLoading,
         downloader: any ModelDownloading,
         embeddingLoader: any EmbeddingLoading,
-        perfSettings: PerfSettings = PerfSettings()
+        perfSettings: PerfSettings = PerfSettings(),
+        defaults: UserDefaults = .standard
     ) {
+        self.defaults = defaults
+        // Restore persisted server config (didSet doesn't fire during init, so assign directly).
+        if let h = defaults.string(forKey: Keys.host) { self.host = h }
+        if defaults.object(forKey: Keys.port) != nil { self.port = defaults.integer(forKey: Keys.port) }
+        self.bindLAN = defaults.bool(forKey: Keys.bindLAN)
+        if let k = defaults.string(forKey: Keys.apiKey) { self.apiKey = k }
+        self.autoStartServer = defaults.bool(forKey: Keys.autoStartServer)
+
         self.perfSettings = perfSettings
         self.downloads = DownloadManager(downloader: downloader)
         let logStore = self.logStore
@@ -199,6 +230,15 @@ public final class AppModel {
     public func stopServer() async {
         await server.stop()
         serverRunning = false
+    }
+
+    /// Start the server on launch if the user enabled auto-start. A model need not be loaded — the
+    /// server runs and returns a `no_model_loaded` error per request until one is. Call once from the
+    /// app's root `.task`. No-op if auto-start is off or the server is already running.
+    public func autoStartServerIfEnabled() async {
+        guard autoStartServer, !serverRunning else { return }
+        logStore.append("Auto-starting server…")
+        await startServer()
     }
 
     // MARK: - Playground (dogfood the local server)

@@ -44,5 +44,6 @@ public struct ContentView: View {
             }
         }
         .task { await model.observeModelState() }
+        .task { await model.autoStartServerIfEnabled() }
     }
 }

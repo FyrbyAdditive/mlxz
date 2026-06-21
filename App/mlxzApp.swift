@@ -48,7 +48,6 @@ struct MenuBarContent: View {
             Button("Stop Server") { Task { await model.stopServer() } }
         } else {
             Button("Start Server") { Task { await model.startServer() } }
-                .disabled(model.modelState.loadedDescriptor == nil)
         }
         Divider()
         Button("Quit mlxz") { NSApplication.shared.terminate(nil) }
