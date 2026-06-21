@@ -6,12 +6,16 @@ import Foundation
 /// several). String argument values are wrapped in `<|"|>…<|"|>`; bare values (numbers/bools) are
 /// coerced to JSON scalars.
 ///
-/// Reasoning: Gemma marks a channel with a `<|channel>NAME<channel|>` header; text after it (until the
-/// next channel header / tool call / end) belongs to that channel. The `thought` channel is the model's
-/// chain-of-thought — it's routed to `reasoning` (surfaced separately, e.g. as `reasoning_content`),
-/// not dumped into the chat as the raw `<|channel>thought<channel|>` markers it used to leak. Any other
-/// channel's text is treated as visible. (Mirrors the grammar of the template's `strip_thinking` macro,
-/// but preserves the thought as reasoning instead of discarding it.)
+/// Channels: Gemma marks a channel with a `<|channel>NAME<channel|>` header; text after it (until the
+/// next header / tool call / end) belongs to that channel. We must STRIP these header markers so they
+/// never leak into the chat — mirroring the template's `strip_thinking` macro.
+///
+/// Crucially, the `thought` channel is NOT separate reasoning in the default (tools / non-thinking)
+/// case: the template PRE-OPENS `<|channel>thought<channel|>` at the start of the model turn when
+/// `enable_thinking` is false (template line ~359), so the model writes its actual ANSWER inside it.
+/// `strip_thinking` then drops only the markers and keeps the content. So we route thought-channel text
+/// to VISIBLE by default (just strip the wrapper). When the caller knows thinking is genuinely enabled,
+/// it can construct the parser with `thoughtIsReasoning: true` to instead surface it as `reasoning`.
 public struct GemmaOutputParser: OutputParser {
     private static let callOpen = "<|tool_call>"
     private static let callClose = "<tool_call|>"
@@ -33,9 +37,14 @@ public struct GemmaOutputParser: OutputParser {
     private var headerBuffer = ""
     private var callIndex = 0
     private let idPrefix: String
+    /// Whether the `thought` channel should surface as reasoning (true) or visible (false). Default
+    /// false: in the tools / non-thinking case Gemma's template pre-opens a thought channel and writes
+    /// the ANSWER there, so it's visible content with the markers stripped.
+    private let thoughtIsReasoning: Bool
 
-    public init(idPrefix: String? = nil) {
+    public init(idPrefix: String? = nil, thoughtIsReasoning: Bool = false) {
         self.idPrefix = idPrefix ?? "call_\(UUID().uuidString.prefix(8))"
+        self.thoughtIsReasoning = thoughtIsReasoning
     }
 
     public mutating func consume(_ chunk: String) -> OutputParse {
@@ -93,7 +102,10 @@ public struct GemmaOutputParser: OutputParser {
                     headerBuffer += String(buffer[buffer.startIndex ..< r.lowerBound])
                     buffer.removeSubrange(buffer.startIndex ..< r.upperBound)
                     let name = headerBuffer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    channel = (name == "thought") ? .reasoning : .visible
+                    // `thought` → reasoning only if the caller opted in; otherwise visible (the
+                    // template pre-opens a thought channel for the plain answer — strip markers, keep
+                    // the content). Unknown channels are visible too.
+                    channel = (name == "thought" && thoughtIsReasoning) ? .reasoning : .visible
                     headerBuffer = ""; mode = .text
                     progress = true
                 } else {

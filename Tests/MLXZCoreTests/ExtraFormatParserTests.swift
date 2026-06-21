@@ -166,43 +166,49 @@ import Testing
         #expect(out.toolCalls.isEmpty)
     }
 
-    @Test func gemmaThoughtRoutesToReasoning() {
-        // Real Gemma-4 shape: <|channel>thought\n<channel|> then the channel's content.
+    @Test func gemmaThoughtIsVisibleByDefault() {
+        // Default (tools / non-thinking): the template pre-opens a thought channel for the ANSWER, so
+        // we strip the markers and keep the content as VISIBLE — NOT the thinking bubble.
         let input = "<|channel>thought\n<channel|>The weather in Paris is 15C and sunny."
         for cbc in [false, true] {
             let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
-            #expect(out.reasoning == "The weather in Paris is 15C and sunny.")
-            #expect(out.visibleText == "")
-            #expect(!out.reasoning.contains("<|channel"))   // no marker leakage
-            #expect(!out.reasoning.contains("<channel|>"))
+            #expect(out.visibleText == "The weather in Paris is 15C and sunny.")
+            #expect(out.reasoning == "")
+            #expect(!out.visibleText.contains("<|channel"))   // markers stripped
+            #expect(!out.visibleText.contains("<channel|>"))
         }
     }
 
-    @Test func gemmaThoughtMarkersNeverLeakAsVisible() {
-        let input = "<|channel>thought <channel|>some reasoning"
+    @Test func gemmaThoughtAsReasoningWhenOptedIn() {
+        let input = "<|channel>thought\n<channel|>some genuine reasoning"
+        let out = run({ GemmaOutputParser(idPrefix: "t", thoughtIsReasoning: true) }, input, charByChar: true)
+        #expect(out.reasoning == "some genuine reasoning")
+        #expect(out.visibleText == "")
+    }
+
+    @Test func gemmaThoughtMarkersNeverLeak() {
+        let input = "<|channel>thought <channel|>the answer"
         let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: true)
         #expect(!out.visibleText.contains("<|channel"))
         #expect(!out.visibleText.contains("channel|>"))
-        #expect(out.reasoning.contains("some reasoning"))
+        #expect(out.visibleText.contains("the answer"))
     }
 
     @Test func gemmaThoughtThenToolCall() {
-        let input = "<|channel>thought\n<channel|>I should search.<|tool_call>call:web_search{q:<|\"|>news<|\"|>}<tool_call|>"
+        let input = "<|channel>thought\n<channel|>Searching now.<|tool_call>call:web_search{q:<|\"|>news<|\"|>}<tool_call|>"
         for cbc in [false, true] {
             let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
-            #expect(out.reasoning.contains("I should search."))
+            #expect(out.visibleText.contains("Searching now."))
             #expect(out.toolCalls.map(\.name) == ["web_search"])
-            #expect(out.visibleText == "")
         }
     }
 
     @Test func gemmaSplitChannelMarkers() {
         var p = GemmaOutputParser(idPrefix: "t")
         var out = OutputParse()
-        for chunk in ["<|chan", "nel>thou", "ght<chan", "nel|>cot text"] { merge(&out, p.consume(chunk)) }
+        for chunk in ["<|chan", "nel>thou", "ght<chan", "nel|>answer text"] { merge(&out, p.consume(chunk)) }
         merge(&out, p.finish())
-        #expect(out.reasoning == "cot text")
-        #expect(out.visibleText == "")
-        #expect(!out.reasoning.contains("<|"))
+        #expect(out.visibleText == "answer text")
+        #expect(!out.visibleText.contains("<|"))
     }
 }
