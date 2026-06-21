@@ -57,11 +57,12 @@ struct ModelLibraryView: View {
                     HStack {
                         VStack(alignment: .leading) {
                             Text(entry.displayName)
-                            Text("↓ \(entry.downloads)  ·  \(entry.quantization ?? "—")"
+                            Text("↓ \(entry.downloads)"
                                 + (entry.sizeString.map { "  ·  \($0)" } ?? ""))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        CapabilityBadges(capabilities: entry.capabilities, loaded: isLoaded(entry.id))
+                        CapabilityBadges(capabilities: entry.capabilities, repoID: entry.id,
+                                         loaded: isLoaded(entry.id))
                         Spacer()
                         downloadControl(for: entry.id)
                         loadControl(for: entry.id)
@@ -152,7 +153,9 @@ struct ModelLibraryView: View {
                 Text(m.displayName).font(.body)
                 Text(byteString(m.sizeBytes)).font(.caption).foregroundStyle(.secondary)
             }
-            CapabilityBadges(capabilities: m.capabilities, loaded: isLoaded(m.descriptor.repoID))
+            CapabilityBadges(
+                capabilities: m.capabilities, repoID: m.descriptor.repoID, modelType: m.modelType,
+                loaded: isLoaded(m.descriptor.repoID))
             Spacer()
             loadControl(for: m.descriptor.repoID)
             Button(role: .destructive) { pendingDelete = m } label: {
@@ -213,18 +216,35 @@ struct ModelLibraryView: View {
     }
 }
 
-/// Small capability chips (tools / vision / MTP).
+/// Model type + capability chips: tuning (Instruct/Base/Reasoning/Code), architecture (MoE / Vision /
+/// MTP), tools, and quantization — so the list shows at a glance what each model is.
 struct CapabilityBadges: View {
     let capabilities: ModelCapabilities
-    /// When true, a "Loaded" badge is shown alongside the capability badges (same row).
+    /// Repo id + optional model_type drive the type labels (tuning, MoE, quant). Empty repoID shows
+    /// only capability chips (e.g. for a bare drafter row).
+    var repoID: String = ""
+    var modelType: String? = nil
+    /// When true, a "Loaded" badge is shown alongside the badges (same row).
     var loaded: Bool = false
 
     var body: some View {
         HStack(spacing: 4) {
             if loaded { badge("Loaded", .green) }
+            // Tuning (what the model is for).
+            if let t = ModelTypeInfo.tuning(repoID: repoID, modelType: modelType) {
+                switch t {
+                case .instruct:  badge("Instruct", .blue)
+                case .reasoning: badge("Reasoning", .indigo)
+                case .base:      badge("Base", .secondaryGray)
+                case .code:      badge("Code", .teal)
+                }
+            }
+            // Architecture / modality.
+            if ModelTypeInfo.isMoE(repoID: repoID, modelType: modelType) { badge("MoE", .pink) }
             if capabilities.contains(.vision) { badge("Vision", .purple) }
             if capabilities.contains(.speculative) { badge("MTP", .orange) }
-            if capabilities.contains(.tools) { badge("Tools", .blue) }
+            // Quantization (how big / precise).
+            if let q = ModelTypeInfo.quantization(repoID: repoID) { badge(q, .brown) }
         }
     }
     private func badge(_ text: String, _ color: Color) -> some View {
@@ -234,6 +254,11 @@ struct CapabilityBadges: View {
             .background(color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)
     }
+}
+
+extension Color {
+    /// A muted gray that reads as a label color (distinct from `.secondary` foreground usage).
+    fileprivate static var secondaryGray: Color { Color.gray }
 }
 
 /// Download / progress / cancel control for one repo. A dedicated `View` that observes the
