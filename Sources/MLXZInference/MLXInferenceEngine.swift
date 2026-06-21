@@ -127,18 +127,23 @@ public struct MLXInferenceEngine: InferenceEngine {
                     // (`enable_thinking: false` → the template emits an empty `<think></think>` and
                     // goes straight to the answer/tool-call) so the model acts instead of musing.
                     let thinkingDisabled = (tools?.isEmpty == false)
-                    // `enable_thinking` is a Qwen chat-template kwarg — only send it to formats that
-                    // understand it (others would choke or ignore it).
+                    let thinkingEnabled = !thinkingDisabled
+                    // `enable_thinking` chat-template kwarg — only sent to formats that understand it
+                    // (Qwen, Gemma). Gemma's template injects a `<|think|>` token when true, which makes
+                    // it emit a separable reasoning channel; without it the reasoning is mixed into the
+                    // answer. We send the explicit boolean so thinking is on by default and off when
+                    // tools are present (so an agentic turn acts instead of musing).
                     let additionalContext: [String: any Sendable]? =
-                        (thinkingDisabled && outputFormat.supportsEnableThinkingKwarg)
-                        ? ["enable_thinking": false] : nil
+                        outputFormat.supportsEnableThinkingKwarg
+                        ? ["enable_thinking": thinkingEnabled] : nil
                     // `startInsideThink` models Qwen's pre-opened `<think>` (the stream starts inside
                     // reasoning, only emits the closing tag). Only Qwen pre-opens; harmony etc. emit an
                     // explicit reasoning channel, so they start outside.
                     let startInsideThink =
                         outputFormat.prefersPreOpenedThink && !thinkingDisabled
                     var parser = OutputParserFactory.make(
-                        format: outputFormat, startInsideThink: startInsideThink)
+                        format: outputFormat, startInsideThink: startInsideThink,
+                        thinkingEnabled: thinkingEnabled)
                     // Reasoning-token budget (hard cap on the <think> block). Only meaningful when
                     // thinking is ON; per-request override else the engine default. 0 = uncapped.
                     let reasoningBudget = thinkingDisabled

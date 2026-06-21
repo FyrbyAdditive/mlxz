@@ -23,7 +23,7 @@ public struct GemmaOutputParser: OutputParser {
     private static let chanOpen = "<|channel>"
     private static let chanClose = "<channel|>"
     /// Markers that can begin in `.text` mode; we hold a partial-suffix tail covering the longest.
-    private static let textMarkers = [callOpen, chanOpen]
+    private static let textMarkers = [callOpen, chanOpen, chanClose]
     private static let maxTextMarkerLen = textMarkers.map(\.count).max() ?? 0
 
     private enum Mode { case text, insideCall, insideChannelHeader }
@@ -71,20 +71,24 @@ public struct GemmaOutputParser: OutputParser {
             progress = false
             switch mode {
             case .text:
-                // Find the earliest of a tool-call open or a channel header.
+                // Find the earliest of: tool-call open, channel header open, or channel close. A
+                // channel CLOSE (`<channel|>`) ends the current channel's content → back to visible.
                 let call = buffer.range(of: Self.callOpen)
-                let chan = buffer.range(of: Self.chanOpen)
-                let firstCall = call?.lowerBound
-                let firstChan = chan?.lowerBound
-                if let c = call, firstCall != nil, (firstChan == nil || firstCall! <= firstChan!) {
-                    emitText(String(buffer[buffer.startIndex ..< c.lowerBound]), into: &out)
-                    buffer.removeSubrange(buffer.startIndex ..< c.upperBound)
-                    mode = .insideCall; callBody = ""
-                    progress = true
-                } else if let h = chan {
-                    emitText(String(buffer[buffer.startIndex ..< h.lowerBound]), into: &out)
-                    buffer.removeSubrange(buffer.startIndex ..< h.upperBound)
-                    mode = .insideChannelHeader; headerBuffer = ""
+                let chanO = buffer.range(of: Self.chanOpen)
+                let chanC = buffer.range(of: Self.chanClose)
+                // Pick whichever marker is earliest in the buffer.
+                let candidates = [call, chanO, chanC].compactMap { $0 }
+                let earliest = candidates.min { $0.lowerBound < $1.lowerBound }
+                if let m = earliest {
+                    emitText(String(buffer[buffer.startIndex ..< m.lowerBound]), into: &out)
+                    buffer.removeSubrange(buffer.startIndex ..< m.upperBound)
+                    if m == call {
+                        mode = .insideCall; callBody = ""
+                    } else if m == chanO {
+                        mode = .insideChannelHeader; headerBuffer = ""
+                    } else {  // chanClose — current channel ended, content resumes as visible.
+                        channel = .visible
+                    }
                     progress = true
                 } else {
                     let keep = partialSuffixAny(buffer, markers: Self.textMarkers,
@@ -97,24 +101,38 @@ public struct GemmaOutputParser: OutputParser {
                 }
 
             case .insideChannelHeader:
-                // The channel name runs from `<|channel>` up to `<channel|>`.
-                if let r = buffer.range(of: Self.chanClose) {
-                    headerBuffer += String(buffer[buffer.startIndex ..< r.lowerBound])
-                    buffer.removeSubrange(buffer.startIndex ..< r.upperBound)
+                // The channel NAME runs from `<|channel>` up to the first newline OR a `<channel|>`
+                // close (the pre-opened `<|channel>thought\n<channel|>` form). Whichever comes first
+                // ends the header; the content then follows in `.text` mode under `channel`.
+                let nl = buffer.firstIndex(of: "\n")
+                let close = buffer.range(of: Self.chanClose)
+                let nlIdx = nl
+                let closeIdx = close?.lowerBound
+                // Determine the header terminator that occurs first (if any is present).
+                let terminator: (end: String.Index, consumed: String.Index)?
+                if let n = nlIdx, closeIdx == nil || n < closeIdx! {
+                    terminator = (n, buffer.index(after: n))            // consume the newline
+                } else if let c = close {
+                    terminator = (c.lowerBound, c.upperBound)           // consume `<channel|>`
+                } else {
+                    terminator = nil
+                }
+                if let term = terminator {
+                    headerBuffer += String(buffer[buffer.startIndex ..< term.end])
+                    buffer.removeSubrange(buffer.startIndex ..< term.consumed)
                     let name = headerBuffer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    // `thought` → reasoning only if the caller opted in; otherwise visible (the
-                    // template pre-opens a thought channel for the plain answer — strip markers, keep
-                    // the content). Unknown channels are visible too.
+                    // `thought` → reasoning only if the caller opted in (thinking enabled); otherwise
+                    // it's the visible answer (the template pre-opens a thought channel for plain
+                    // answers — strip the marker, keep the content). Unknown channels → visible.
                     channel = (name == "thought" && thoughtIsReasoning) ? .reasoning : .visible
                     headerBuffer = ""; mode = .text
                     progress = true
+                } else if !atEnd {
+                    // Header not yet complete — keep buffering (the name is short; hold it all).
+                    // (No partial emission: header text must never leak.)
                 } else {
-                    let keep = partialSuffix(buffer, guarding: Self.chanClose, atEnd: atEnd)
-                    if keep < buffer.count {
-                        let idx = buffer.index(buffer.endIndex, offsetBy: -keep)
-                        headerBuffer += String(buffer[buffer.startIndex ..< idx])
-                        buffer.removeSubrange(buffer.startIndex ..< idx)
-                    }
+                    // EOS mid-header — drop the partial header (it's a marker fragment, not content).
+                    buffer = ""
                 }
 
             case .insideCall:

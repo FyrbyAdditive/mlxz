@@ -61,9 +61,15 @@ public enum OutputFormat: Sendable, Equatable, CaseIterable {
     /// emits an explicit `<|channel|>analysis` instead.
     public var prefersPreOpenedThink: Bool { self == .qwenHermes }
 
-    /// Whether the model's chat template understands the `enable_thinking` kwarg (a Qwen-ism). Other
-    /// formats must not be sent it.
-    public var supportsEnableThinkingKwarg: Bool { self == .qwenHermes }
+    /// Whether the model's chat template understands the `enable_thinking` kwarg. Qwen and Gemma both
+    /// gate reasoning on it (Gemma's template injects a `<|think|>` token when it's true).
+    public var supportsEnableThinkingKwarg: Bool { self == .qwenHermes || self == .gemma }
+
+    /// Whether this format carries reasoning in a dedicated channel that should surface as
+    /// `reasoning_content` WHEN thinking is enabled. Gemma's `thought` channel is reasoning only in
+    /// that case (with thinking off it's the visible answer — see `GemmaOutputParser`). Qwen/harmony
+    /// handle reasoning via their own parsers, so this flag is Gemma-specific.
+    public var thoughtChannelIsReasoningWhenThinking: Bool { self == .gemma }
 }
 
 /// Selects and builds the right `OutputParser` for a model. Pure and dependency-free (lives in
@@ -108,16 +114,23 @@ public enum OutputParserFactory {
         return .qwenHermes
     }
 
-    /// Build a fresh parser for `format`. `startInsideThink` is honored only by formats that pre-open
-    /// a think block (`qwenHermes`); others ignore it.
-    public static func make(format: OutputFormat, startInsideThink: Bool) -> any OutputParser {
+    /// Build a fresh parser for `format`.
+    /// - Parameters:
+    ///   - startInsideThink: honored only by formats that pre-open a think block (`qwenHermes`).
+    ///   - thinkingEnabled: whether reasoning is on for this request. Gemma routes its `thought`
+    ///     channel to reasoning only when thinking is enabled (otherwise it's the visible answer).
+    public static func make(
+        format: OutputFormat, startInsideThink: Bool, thinkingEnabled: Bool = false
+    ) -> any OutputParser {
         switch format {
         case .qwenHermes: return QwenOutputParser(startInsideThink: startInsideThink)
         case .harmony:    return HarmonyOutputParser()
         case .mistral:    return MistralOutputParser()
         case .llama3:     return Llama3OutputParser()
         case .glm4:       return GLM4OutputParser()
-        case .gemma:      return GemmaOutputParser()
+        case .gemma:
+            return GemmaOutputParser(
+                thoughtIsReasoning: format.thoughtChannelIsReasoningWhenThinking && thinkingEnabled)
         }
     }
 }

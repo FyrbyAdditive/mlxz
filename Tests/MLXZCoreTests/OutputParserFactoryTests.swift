@@ -46,11 +46,19 @@ import Testing
     }
 
     @Test func formatHooks() {
+        // Only Qwen pre-opens a <think> block.
         #expect(OutputFormat.qwenHermes.prefersPreOpenedThink)
-        #expect(OutputFormat.qwenHermes.supportsEnableThinkingKwarg)
         for f in [OutputFormat.harmony, .mistral, .llama3, .glm4, .gemma] {
             #expect(!f.prefersPreOpenedThink)
+        }
+        // enable_thinking kwarg: Qwen and Gemma understand it; others must not be sent it.
+        #expect(OutputFormat.qwenHermes.supportsEnableThinkingKwarg)
+        #expect(OutputFormat.gemma.supportsEnableThinkingKwarg)
+        for f in [OutputFormat.harmony, .mistral, .llama3, .glm4] {
             #expect(!f.supportsEnableThinkingKwarg)
         }
+        // Only Gemma surfaces a thought channel as reasoning (when thinking is on).
+        #expect(OutputFormat.gemma.thoughtChannelIsReasoningWhenThinking)
+        #expect(!OutputFormat.qwenHermes.thoughtChannelIsReasoningWhenThinking)
     }
 }
