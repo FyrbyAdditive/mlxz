@@ -22,7 +22,14 @@ extension MLXInferenceEngine {
             return nil
         }.joined()
 
-        let images: [UserInput.Image] = message.content.compactMap { part in
+        return Chat.Message(role: role, content: text,
+                            images: images(from: message, maxImagePixels: maxImagePixels), videos: [])
+    }
+
+    /// Convert a `ChatMessage`'s image content parts to `UserInput.Image`s (downscaled). Shared by the
+    /// `.chat` and `.messages` (tool-history) paths so images survive both.
+    static func images(from message: ChatMessage, maxImagePixels: Int) -> [UserInput.Image] {
+        message.content.compactMap { part in
             switch part {
             case .imageURL(let url):
                 // Local file URLs can be loaded + capped now; remote URLs are fetched by the
@@ -38,8 +45,6 @@ extension MLXInferenceEngine {
                 return nil
             }
         }
-
-        return Chat.Message(role: role, content: text, images: images, videos: [])
     }
 
     /// Downscale a CIImage so width×height ≤ `maxPixels` (aspect preserved). No-op when `maxPixels`
@@ -68,11 +73,24 @@ extension MLXInferenceEngine {
         case .tool: "tool"
         }
         var dict: [String: any Sendable] = ["role": roleString]
-        // Text content (image parts aren't supported on the tool/agentic path).
-        dict["content"] = message.content.compactMap { part -> String? in
+        let text = message.content.compactMap { part -> String? in
             if case let .text(t) = part { return t }
             return nil
         }.joined()
+        let imageCount = message.content.filter { part in
+            if case .text = part { return false } else { return true }
+        }.count
+        if imageCount > 0 {
+            // Multimodal content: an array of typed parts (one `{"type":"image"}` per image, then the
+            // text) so the chat template inserts the image placeholder token. The actual pixels are
+            // passed alongside via UserInput(messages:images:). Matches the OpenAI/template dict shape.
+            var parts: [[String: any Sendable]] = Array(
+                repeating: ["type": "image"], count: imageCount)
+            if !text.isEmpty { parts.append(["type": "text", "text": text]) }
+            dict["content"] = parts
+        } else {
+            dict["content"] = text
+        }
 
         if !message.toolCalls.isEmpty {
             dict["tool_calls"] = message.toolCalls.map { call -> [String: any Sendable] in

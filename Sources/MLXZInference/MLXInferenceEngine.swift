@@ -154,8 +154,15 @@ public struct MLXInferenceEngine: InferenceEngine {
                     }
                     let userInput: UserInput
                     if hasToolHistory {
+                        // The messages-dict path doesn't extract images from the dicts, so collect
+                        // them explicitly and pass via `images:` — otherwise an image sent in an
+                        // agentic (tool-history) turn is silently dropped and the model "sees" nothing.
+                        let images = request.messages.flatMap {
+                            Self.images(from: $0, maxImagePixels: perf.maxImagePixels)
+                        }
                         userInput = UserInput(
                             messages: request.messages.map(Self.mapMessageDict),
+                            images: images,
                             tools: tools, additionalContext: additionalContext)
                     } else {
                         userInput = UserInput(
