@@ -114,4 +114,55 @@ import Testing
             #expect(out.toolCalls.map(\.name) == ["f"])
         }
     }
+
+    // MARK: Gemma  (real Gemma-4 grammar: <|tool_call>call:name{key:<|"|>v<|"|>}<tool_call|>)
+
+    @Test func gemmaSingleCall() {
+        let input = "<|tool_call>call:web_search{query:<|\"|>capital of France<|\"|>}<tool_call|>"
+        for cbc in [false, true] {
+            let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
+            #expect(out.toolCalls.map(\.name) == ["web_search"])
+            #expect(out.toolCalls.first?.argumentsJSON.contains("\"query\"") == true)
+            #expect(out.toolCalls.first?.argumentsJSON.contains("capital of France") == true)
+            #expect(out.visibleText == "")
+        }
+    }
+
+    @Test func gemmaMultipleCalls() {
+        let input = "<|tool_call>call:web_search{query:<|\"|>a<|\"|>}<tool_call|>"
+            + "<|tool_call>call:web_search{query:<|\"|>b<|\"|>}<tool_call|>"
+        for cbc in [false, true] {
+            let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
+            #expect(out.toolCalls.map(\.name) == ["web_search", "web_search"])
+            #expect(Set(out.toolCalls.map(\.id)).count == 2)
+        }
+    }
+
+    @Test func gemmaStringWithCommaPreserved() {
+        // A comma inside the quoted string value must not split the argument.
+        let input = "<|tool_call>call:f{q:<|\"|>Paris, France<|\"|>}<tool_call|>"
+        let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: false)
+        #expect(out.toolCalls.first?.argumentsJSON.contains("Paris, France") == true)
+    }
+
+    @Test func gemmaBareNumericArg() {
+        let input = "<|tool_call>call:f{n:42}<tool_call|>"
+        let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: false)
+        #expect(out.toolCalls.first?.argumentsJSON.contains("\"n\":42") == true)
+    }
+
+    @Test func gemmaTextAroundCall() {
+        let input = "Let me look. <|tool_call>call:f{x:<|\"|>y<|\"|>}<tool_call|> done"
+        for cbc in [false, true] {
+            let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
+            #expect(out.visibleText == "Let me look.  done")
+            #expect(out.toolCalls.map(\.name) == ["f"])
+        }
+    }
+
+    @Test func gemmaPlainTextNoLeak() {
+        let out = run({ GemmaOutputParser(idPrefix: "t") }, "Hello! How can I help?", charByChar: true)
+        #expect(out.visibleText == "Hello! How can I help?")
+        #expect(out.toolCalls.isEmpty)
+    }
 }

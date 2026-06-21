@@ -53,6 +53,8 @@ public enum OutputFormat: Sendable, Equatable, CaseIterable {
     case llama3
     /// GLM4: `name<arg_key>k</arg_key><arg_value>v</arg_value>…` (no reasoning channel).
     case glm4
+    /// Gemma: `<|tool_call>call:name{key:<|"|>v<|"|>}<tool_call|>` (no reasoning channel).
+    case gemma
 
     /// Whether the model's chat template PRE-OPENS a `<think>` block in the prompt (so the stream
     /// starts inside reasoning and only emits the closing tag). Only Qwen/Hermes does this; harmony
@@ -93,6 +95,10 @@ public enum OutputParserFactory {
         if haystack.contains("glm4") || haystack.contains("glm-4") {
             return .glm4
         }
+        // Gemma family (gemma, gemma-3, gemma-4, …).
+        if haystack.contains("gemma") {
+            return .gemma
+        }
         // Llama 3+ inline `<|python_tag|>`. Match the family but avoid older Llama 1/2; the `3`/`4`
         // markers in the repo id or model type are the practical signal for current MLX conversions.
         if haystack.contains("llama-3") || haystack.contains("llama3")
@@ -111,6 +117,7 @@ public enum OutputParserFactory {
         case .mistral:    return MistralOutputParser()
         case .llama3:     return Llama3OutputParser()
         case .glm4:       return GLM4OutputParser()
+        case .gemma:      return GemmaOutputParser()
         }
     }
 }

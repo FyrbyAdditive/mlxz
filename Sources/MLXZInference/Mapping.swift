@@ -102,9 +102,56 @@ extension MLXInferenceEngine {
         if let schema = tool.parametersJSONSchema,
            let data = schema.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: any Sendable] {
-            function["parameters"] = obj
+            function["parameters"] = sanitizeSchema(obj)
         }
         return ["type": "function", "function": function]
+    }
+
+    /// Normalize a JSON-Schema node so chat templates that assume `type` is always a present string
+    /// don't crash. Gemma's template applies `value['type'] | upper` at the top level WITHOUT guarding
+    /// that `type` exists or is a string (the swift-jinja `upper` filter throws "upper filter requires
+    /// string" otherwise) — and real tool schemas (e.g. from VS Code Copilot) routinely omit `type` or
+    /// use a union like `["string","null"]`. So, recursively:
+    ///   - a missing `type` on a schema node → default to "string";
+    ///   - an array `type` (union) → its first string member (e.g. `["string","null"]` → "string").
+    /// All-string schemas pass through unchanged, so this is lossless for well-formed inputs.
+    static func sanitizeSchema(_ node: [String: any Sendable]) -> [String: any Sendable] {
+        var out = node
+
+        // Collapse / default the `type` field.
+        switch out["type"] {
+        case let arr as [Any]:
+            out["type"] = arr.compactMap { $0 as? String }.first ?? "string"
+        case is String:
+            break  // already a string
+        case nil:
+            // Only nodes that look like a schema get a default type — i.e. ones the template inspects.
+            if out["properties"] != nil || out["enum"] != nil || out["items"] != nil
+                || out["description"] != nil {
+                out["type"] = "string"
+            }
+        default:
+            out["type"] = "string"
+        }
+
+        // Recurse into nested schema-bearing fields.
+        if let props = out["properties"] as? [String: any Sendable] {
+            out["properties"] = props.mapValues { v in
+                (v as? [String: any Sendable]).map(sanitizeSchema) ?? v
+            }
+        }
+        if let items = out["items"] as? [String: any Sendable] {
+            out["items"] = sanitizeSchema(items)
+        }
+        // JSON-Schema combinators the template may also walk.
+        for key in ["anyOf", "oneOf", "allOf"] {
+            if let arr = out[key] as? [any Sendable] {
+                out[key] = arr.map { v in
+                    (v as? [String: any Sendable]).map(sanitizeSchema) ?? v
+                }
+            }
+        }
+        return out
     }
 
     /// Map our `SamplingParameters` onto the package's `GenerateParameters`, applying perf options.

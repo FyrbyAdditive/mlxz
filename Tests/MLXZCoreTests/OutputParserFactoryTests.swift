@@ -23,6 +23,12 @@ import Testing
         #expect(OutputParserFactory.detectFormat(repoID: "x", modelType: "llama4") == .llama3)
     }
 
+    @Test func detectsGemma() {
+        #expect(OutputParserFactory.detectFormat(repoID: "mlx-community/gemma-4-31b-it-4bit") == .gemma)
+        #expect(OutputParserFactory.detectFormat(repoID: "google/gemma-3-4b-it") == .gemma)
+        #expect(OutputParserFactory.detectFormat(repoID: "x", modelType: "gemma") == .gemma)
+    }
+
     @Test func defaultsToQwenHermes() {
         #expect(OutputParserFactory.detectFormat(repoID: "mlx-community/Qwen3.6-27B-4bit") == .qwenHermes)
         #expect(OutputParserFactory.detectFormat(repoID: "mlx-community/Hermes-3") == .qwenHermes)
@@ -36,12 +42,13 @@ import Testing
         #expect(OutputParserFactory.make(format: .mistral, startInsideThink: false) is MistralOutputParser)
         #expect(OutputParserFactory.make(format: .llama3, startInsideThink: false) is Llama3OutputParser)
         #expect(OutputParserFactory.make(format: .glm4, startInsideThink: false) is GLM4OutputParser)
+        #expect(OutputParserFactory.make(format: .gemma, startInsideThink: false) is GemmaOutputParser)
     }
 
     @Test func formatHooks() {
         #expect(OutputFormat.qwenHermes.prefersPreOpenedThink)
         #expect(OutputFormat.qwenHermes.supportsEnableThinkingKwarg)
-        for f in [OutputFormat.harmony, .mistral, .llama3, .glm4] {
+        for f in [OutputFormat.harmony, .mistral, .llama3, .glm4, .gemma] {
             #expect(!f.prefersPreOpenedThink)
             #expect(!f.supportsEnableThinkingKwarg)
         }
