@@ -108,14 +108,23 @@ extension MLXInferenceEngine {
     }
 
     /// Normalize a JSON-Schema node so chat templates that assume `type` is always a present string
-    /// don't crash. Gemma's template applies `value['type'] | upper` at the top level WITHOUT guarding
+    /// don't crash. Gemma's template applies `value['type'] | upper` on every property WITHOUT guarding
     /// that `type` exists or is a string (the swift-jinja `upper` filter throws "upper filter requires
-    /// string" otherwise) — and real tool schemas (e.g. from VS Code Copilot) routinely omit `type` or
-    /// use a union like `["string","null"]`. So, recursively:
-    ///   - a missing `type` on a schema node → default to "string";
-    ///   - an array `type` (union) → its first string member (e.g. `["string","null"]` → "string").
-    /// All-string schemas pass through unchanged, so this is lossless for well-formed inputs.
-    static func sanitizeSchema(_ node: [String: any Sendable]) -> [String: any Sendable] {
+    /// string" otherwise) — and real tool schemas (e.g. from VS Code Copilot) routinely omit `type`,
+    /// use a union like `["string","null"]`, or even give a property an empty schema `{}` (seen in the
+    /// `make_chart` tool's `x` point). So, recursively:
+    ///   - an array `type` (union) → its first string member (e.g. `["string","null"]` → "string");
+    ///   - a missing `type` on a node in SCHEMA POSITION (a property value, array `items`, or a
+    ///     combinator branch — anywhere the template reads `value['type']`) → default to "string",
+    ///     even for an empty `{}`.
+    /// The top-level parameters object keeps its declared `type: object`. All-string schemas pass
+    /// through unchanged, so this is lossless for well-formed inputs.
+    ///
+    /// - Parameter inSchemaPosition: true when `node` is a property value / `items` / combinator branch
+    ///   (the template will `upper` its `type`); false for the root parameters object.
+    static func sanitizeSchema(
+        _ node: [String: any Sendable], inSchemaPosition: Bool = false
+    ) -> [String: any Sendable] {
         var out = node
 
         // Collapse / default the `type` field.
@@ -125,29 +134,31 @@ extension MLXInferenceEngine {
         case is String:
             break  // already a string
         case nil:
-            // Only nodes that look like a schema get a default type — i.e. ones the template inspects.
-            if out["properties"] != nil || out["enum"] != nil || out["items"] != nil
-                || out["description"] != nil {
+            // Any node the template inspects needs a string type. A property value / items / branch is
+            // always inspected (default it unconditionally — covers an empty `{}`); the root object is
+            // only defaulted if it looks like a schema.
+            if inSchemaPosition || out["properties"] != nil || out["enum"] != nil
+                || out["items"] != nil || out["description"] != nil {
                 out["type"] = "string"
             }
         default:
             out["type"] = "string"
         }
 
-        // Recurse into nested schema-bearing fields.
+        // Recurse into nested schema-bearing fields (each is a schema position).
         if let props = out["properties"] as? [String: any Sendable] {
             out["properties"] = props.mapValues { v in
-                (v as? [String: any Sendable]).map(sanitizeSchema) ?? v
+                (v as? [String: any Sendable]).map { sanitizeSchema($0, inSchemaPosition: true) } ?? v
             }
         }
         if let items = out["items"] as? [String: any Sendable] {
-            out["items"] = sanitizeSchema(items)
+            out["items"] = sanitizeSchema(items, inSchemaPosition: true)
         }
         // JSON-Schema combinators the template may also walk.
         for key in ["anyOf", "oneOf", "allOf"] {
             if let arr = out[key] as? [any Sendable] {
                 out[key] = arr.map { v in
-                    (v as? [String: any Sendable]).map(sanitizeSchema) ?? v
+                    (v as? [String: any Sendable]).map { sanitizeSchema($0, inSchemaPosition: true) } ?? v
                 }
             }
         }
