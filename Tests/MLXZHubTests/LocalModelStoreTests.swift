@@ -86,6 +86,74 @@ import Foundation
         #expect(LocalModelStore.installedModel(at: url) == nil)
     }
 
+    /// Build a snapshot dir with config.json + the given files (name → byte size). Returns the dir.
+    private func makeSnapshot(_ files: [(String, Int)]) throws -> URL {
+        let fm = FileManager.default
+        let rev = fm.temporaryDirectory.appendingPathComponent("mlxz-snap-\(UUID().uuidString)")
+        try fm.createDirectory(at: rev, withIntermediateDirectories: true)
+        try #"{"model_type":"gemma"}"#.write(
+            to: rev.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        for (name, bytes) in files {
+            try Data(count: bytes).write(to: rev.appendingPathComponent(name))
+        }
+        return rev
+    }
+
+    @Test func completeSingleFileModelIsInstalled() throws {
+        let rev = try makeSnapshot([("model.safetensors", 4096)])
+        defer { try? FileManager.default.removeItem(at: rev) }
+        #expect(LocalModelStore.isComplete(rev))
+    }
+
+    @Test func configOnlyIsNotComplete() throws {
+        // A partial download with config.json but NO weight files (the "32 MB partial" shape).
+        let rev = try makeSnapshot([("generation_config.json", 200)])
+        defer { try? FileManager.default.removeItem(at: rev) }
+        #expect(!LocalModelStore.isComplete(rev))
+    }
+
+    @Test func shardedModelMissingShardIsNotComplete() throws {
+        // Index references 7 shards but only 1 landed → incomplete (the real gemma-4-31b failure).
+        let index = """
+        {"weight_map":{"a":"model-00001-of-00007.safetensors","b":"model-00007-of-00007.safetensors"}}
+        """
+        let rev = try makeSnapshot([("model-00001-of-00007.safetensors", 4096)])
+        try index.write(to: rev.appendingPathComponent("model.safetensors.index.json"),
+                        atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: rev) }
+        #expect(!LocalModelStore.isComplete(rev), "missing shard 7 → not complete")
+    }
+
+    @Test func shardedModelAllShardsPresentIsComplete() throws {
+        let index = """
+        {"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}
+        """
+        let rev = try makeSnapshot([
+            ("model-00001-of-00002.safetensors", 4096),
+            ("model-00002-of-00002.safetensors", 4096),
+        ])
+        try index.write(to: rev.appendingPathComponent("model.safetensors.index.json"),
+                        atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: rev) }
+        #expect(LocalModelStore.isComplete(rev))
+    }
+
+    @Test func partialShardedModelNotListedAsInstalled() throws {
+        // End-to-end: a partial sharded model must not appear in installedModels().
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("mlxz-partial2-\(UUID().uuidString)")
+        let rev = root.appendingPathComponent("models--mlx-community--gemma-4-31b-8bit/snapshots/r")
+        try fm.createDirectory(at: rev, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        try #"{"model_type":"gemma"}"#.write(to: rev.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        try """
+        {"weight_map":{"a":"model-00001-of-00007.safetensors","b":"model-00002-of-00007.safetensors"}}
+        """.write(to: rev.appendingPathComponent("model.safetensors.index.json"), atomically: true, encoding: .utf8)
+        try Data(count: 4096).write(to: rev.appendingPathComponent("model-00001-of-00007.safetensors"))
+        // shard 2 missing → partial
+        #expect(LocalModelStore(cacheRoots: [root]).installedModels().isEmpty)
+    }
+
     @Test func hasCacheDirectoryDetectsPartialAndDeletedDownloads() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("mlxz-partial-\(UUID().uuidString)")

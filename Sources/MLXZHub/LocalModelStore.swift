@@ -106,10 +106,13 @@ public struct LocalModelStore: Sendable {
         guard let revisions = try? fm.contentsOfDirectory(at: snapshots, includingPropertiesForKeys: nil) else {
             return nil
         }
-        // Pick the snapshot that actually contains a config.json.
+        // Pick the snapshot that actually contains a config.json AND complete weights. A partial /
+        // failed download can leave config.json (and a tiny shard) without the full weight set — that
+        // must NOT show as an installed model (it isn't loadable). `isComplete` verifies the weights.
         for revision in revisions {
             let config = revision.appendingPathComponent("config.json")
             guard fm.fileExists(atPath: config.path) else { continue }
+            guard Self.isComplete(revision) else { continue }
             let info = Self.readConfig(config)
             let size = Self.directorySize(revision)
             return InstalledModel(
@@ -121,6 +124,39 @@ public struct LocalModelStore: Sendable {
             )
         }
         return nil
+    }
+
+    /// Whether a snapshot directory holds a COMPLETE set of model weights (not a partial download).
+    /// - Requires at least one weight file (`*.safetensors` / `.gguf` / `.npz`).
+    /// - If a `*.safetensors.index.json` is present (sharded models), every shard it references must
+    ///   exist in the snapshot and resolve (through the HF symlink) to a non-empty blob. This is what
+    ///   rejects the "32 MB partial" — config.json landed but most of the 7 shards never finished.
+    static func isComplete(_ revision: URL) -> Bool {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: revision.path) else { return false }
+
+        let weightExts = ["safetensors", "gguf", "npz"]
+        let weightFiles = entries.filter { name in
+            weightExts.contains((name as NSString).pathExtension.lowercased())
+        }
+        guard !weightFiles.isEmpty else { return false }   // no weights at all → not installed
+
+        // Sharded safetensors: trust the index — all referenced shards must be present & non-empty.
+        if let indexName = entries.first(where: { $0.hasSuffix(".safetensors.index.json") }),
+           let data = try? Data(contentsOf: revision.appendingPathComponent(indexName)),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let weightMap = obj["weight_map"] as? [String: String] {
+            let requiredShards = Set(weightMap.values)
+            for shard in requiredShards {
+                let url = revision.appendingPathComponent(shard)
+                guard fm.fileExists(atPath: url.path) else { return false }
+                // Resolve the HF symlink into blobs/ and require a non-trivial size.
+                let resolved = url.resolvingSymlinksInPath()
+                let sz = (try? resolved.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if sz <= 0 { return false }
+            }
+        }
+        return true
     }
 
     /// Read `model_type` and a vision signal from config.json. A model is multimodal if config
