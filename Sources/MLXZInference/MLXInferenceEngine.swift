@@ -267,6 +267,16 @@ public struct MLXInferenceEngine: InferenceEngine {
         }
     }
 
+    /// Whether every layer's cache can be SOUNDLY trimmed back to an arbitrary earlier position for
+    /// prefix reuse. The fork's `canTrimPromptCache` returns true for a `RotatingKVCache` whenever its
+    /// offset is still below the window, but that cache's `trim` only rewinds counters without
+    /// restoring evicted ring-buffer entries — so trimming it corrupts state and the next prefill
+    /// crashes. Hybrid sliding-window models (Gemma-3/4) mix rotating + full caches, so we must reject
+    /// the whole set if ANY layer is rotating, and fall back to a fresh prefill.
+    static func isSoundlyTrimmable(_ cache: [KVCache]) -> Bool {
+        !cache.contains { $0 is RotatingKVCache }
+    }
+
     /// Build a generation stream that reuses a persistent KV cache for the shared prompt prefix.
     ///
     /// Runs inside `container.perform` because the cache, model, and iterator are non-Sendable.
@@ -284,9 +294,15 @@ public struct MLXInferenceEngine: InferenceEngine {
             let fullInput = try await context.processor.prepare(input: boxedInput.consume())
             let newTokens = fullInput.text.tokens.asArray(Int32.self)
 
-            // Decide how much of the existing cache to reuse.
+            // Decide how much of the existing cache to reuse. Only reuse when EVERY layer's cache can
+            // be SOUNDLY trimmed to an arbitrary prior position. A `RotatingKVCache` (the sliding-
+            // window attention layers of hybrid models like Gemma-3/4) reports `isTrimmable` while its
+            // offset is below the window, but its `trim` only decrements offset/idx without restoring
+            // dropped ring-buffer entries — trimming it back to a prefix corrupts the cache and the
+            // next prefill crashes with "[reshape] Cannot infer the shape of an empty array". So we
+            // exclude rotating caches from reuse and fall back to a fresh prefill for those models.
             let plan: PrefixCachePlan.Decision
-            if let cache = box.cache, canTrimPromptCache(cache) {
+            if let cache = box.cache, canTrimPromptCache(cache), Self.isSoundlyTrimmable(cache) {
                 plan = PrefixCachePlan.plan(cachedTokens: box.tokens, newTokens: newTokens)
             } else {
                 plan = .fresh

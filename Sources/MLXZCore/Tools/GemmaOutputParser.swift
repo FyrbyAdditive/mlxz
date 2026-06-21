@@ -1,23 +1,36 @@
 import Foundation
 
-/// `OutputParser` for Gemma's function-call format. Gemma-4 (MLX) emits tool calls as:
-/// ```
-/// <|tool_call>call:NAME{key:<|"|>string value<|"|>,key2:42}<tool_call|>
-/// ```
-/// possibly several in a row. String argument values are wrapped in `<|"|>…<|"|>`; non-string values
-/// (numbers/bools) appear bare. Gemma has no separate reasoning channel, so non-tool text streams as
-/// visible. (The fork's `GemmaFunctionParser` targets a different, tag-based variant
-/// `<start_function_call>…call:name{…}…<end_function_call>` with `<escape>` strings; this matches the
-/// `<|tool_call>`/`<tool_call|>`/`<|"|>` markers actually produced by the Gemma-4 MLX checkpoints.)
+/// `OutputParser` for Gemma's output format (Gemma-4 MLX checkpoints).
+///
+/// Tool calls: `<|tool_call>call:NAME{key:<|"|>string value<|"|>,key2:42}<tool_call|>` (possibly
+/// several). String argument values are wrapped in `<|"|>…<|"|>`; bare values (numbers/bools) are
+/// coerced to JSON scalars.
+///
+/// Reasoning: Gemma marks a channel with a `<|channel>NAME<channel|>` header; text after it (until the
+/// next channel header / tool call / end) belongs to that channel. The `thought` channel is the model's
+/// chain-of-thought — it's routed to `reasoning` (surfaced separately, e.g. as `reasoning_content`),
+/// not dumped into the chat as the raw `<|channel>thought<channel|>` markers it used to leak. Any other
+/// channel's text is treated as visible. (Mirrors the grammar of the template's `strip_thinking` macro,
+/// but preserves the thought as reasoning instead of discarding it.)
 public struct GemmaOutputParser: OutputParser {
-    private static let openTag = "<|tool_call>"
-    private static let closeTag = "<tool_call|>"
+    private static let callOpen = "<|tool_call>"
+    private static let callClose = "<tool_call|>"
     private static let strMarker = "<|\"|>"
+    private static let chanOpen = "<|channel>"
+    private static let chanClose = "<channel|>"
+    /// Markers that can begin in `.text` mode; we hold a partial-suffix tail covering the longest.
+    private static let textMarkers = [callOpen, chanOpen]
+    private static let maxTextMarkerLen = textMarkers.map(\.count).max() ?? 0
 
-    private enum Mode { case text, insideCall }
+    private enum Mode { case text, insideCall, insideChannelHeader }
+    /// Which channel the current `.text` content belongs to (nil = visible; "thought" = reasoning).
+    private enum Channel { case visible, reasoning }
+
     private var mode: Mode = .text
+    private var channel: Channel = .visible
     private var buffer = ""
     private var callBody = ""
+    private var headerBuffer = ""
     private var callIndex = 0
     private let idPrefix: String
 
@@ -35,8 +48,8 @@ public struct GemmaOutputParser: OutputParser {
     public mutating func finish() -> OutputParse {
         var out = OutputParse()
         process(&out, atEnd: true)
-        if mode == .text, !buffer.isEmpty { out.visibleText += buffer; buffer = "" }
-        // An unterminated call at EOS: best-effort parse what we have.
+        if mode == .text, !buffer.isEmpty { emitText(buffer, into: &out); buffer = "" }
+        // Unterminated call at EOS: best-effort parse what we have.
         if mode == .insideCall, !callBody.isEmpty, let c = parseCall(callBody) {
             out.toolCalls.append(c); callBody = ""
         }
@@ -49,28 +62,58 @@ public struct GemmaOutputParser: OutputParser {
             progress = false
             switch mode {
             case .text:
-                if let r = buffer.range(of: Self.openTag) {
-                    out.visibleText += String(buffer[buffer.startIndex ..< r.lowerBound])
-                    buffer.removeSubrange(buffer.startIndex ..< r.upperBound)
+                // Find the earliest of a tool-call open or a channel header.
+                let call = buffer.range(of: Self.callOpen)
+                let chan = buffer.range(of: Self.chanOpen)
+                let firstCall = call?.lowerBound
+                let firstChan = chan?.lowerBound
+                if let c = call, firstCall != nil, (firstChan == nil || firstCall! <= firstChan!) {
+                    emitText(String(buffer[buffer.startIndex ..< c.lowerBound]), into: &out)
+                    buffer.removeSubrange(buffer.startIndex ..< c.upperBound)
                     mode = .insideCall; callBody = ""
                     progress = true
+                } else if let h = chan {
+                    emitText(String(buffer[buffer.startIndex ..< h.lowerBound]), into: &out)
+                    buffer.removeSubrange(buffer.startIndex ..< h.upperBound)
+                    mode = .insideChannelHeader; headerBuffer = ""
+                    progress = true
                 } else {
-                    let keep = partialSuffix(buffer, guarding: Self.openTag, atEnd: atEnd)
+                    let keep = partialSuffixAny(buffer, markers: Self.textMarkers,
+                                                maxLen: Self.maxTextMarkerLen, atEnd: atEnd)
                     if keep < buffer.count {
                         let idx = buffer.index(buffer.endIndex, offsetBy: -keep)
-                        out.visibleText += String(buffer[buffer.startIndex ..< idx])
+                        emitText(String(buffer[buffer.startIndex ..< idx]), into: &out)
                         buffer.removeSubrange(buffer.startIndex ..< idx)
                     }
                 }
+
+            case .insideChannelHeader:
+                // The channel name runs from `<|channel>` up to `<channel|>`.
+                if let r = buffer.range(of: Self.chanClose) {
+                    headerBuffer += String(buffer[buffer.startIndex ..< r.lowerBound])
+                    buffer.removeSubrange(buffer.startIndex ..< r.upperBound)
+                    let name = headerBuffer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    channel = (name == "thought") ? .reasoning : .visible
+                    headerBuffer = ""; mode = .text
+                    progress = true
+                } else {
+                    let keep = partialSuffix(buffer, guarding: Self.chanClose, atEnd: atEnd)
+                    if keep < buffer.count {
+                        let idx = buffer.index(buffer.endIndex, offsetBy: -keep)
+                        headerBuffer += String(buffer[buffer.startIndex ..< idx])
+                        buffer.removeSubrange(buffer.startIndex ..< idx)
+                    }
+                }
+
             case .insideCall:
-                if let r = buffer.range(of: Self.closeTag) {
+                if let r = buffer.range(of: Self.callClose) {
                     callBody += String(buffer[buffer.startIndex ..< r.lowerBound])
                     buffer.removeSubrange(buffer.startIndex ..< r.upperBound)
                     if let c = parseCall(callBody) { out.toolCalls.append(c) }
                     callBody = ""; mode = .text
                     progress = true
                 } else {
-                    let keep = partialSuffix(buffer, guarding: Self.closeTag, atEnd: atEnd)
+                    let keep = partialSuffix(buffer, guarding: Self.callClose, atEnd: atEnd)
                     if keep < buffer.count {
                         let idx = buffer.index(buffer.endIndex, offsetBy: -keep)
                         callBody += String(buffer[buffer.startIndex ..< idx])
@@ -78,6 +121,15 @@ public struct GemmaOutputParser: OutputParser {
                     }
                 }
             }
+        }
+    }
+
+    /// Route `.text`-mode content to the active channel (visible or reasoning).
+    private func emitText(_ text: String, into out: inout OutputParse) {
+        guard !text.isEmpty else { return }
+        switch channel {
+        case .visible: out.visibleText += text
+        case .reasoning: out.reasoning += text
         }
     }
 
@@ -107,40 +159,48 @@ public struct GemmaOutputParser: OutputParser {
             guard let colon = rest.firstIndex(of: ":") else { break }
             let key = rest[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
             rest = rest[rest.index(after: colon)...]
-            // Leading whitespace before the value.
             while let f = rest.first, f == " " { rest = rest.dropFirst() }
 
             if rest.hasPrefix(Self.strMarker) {
-                // Quoted string: <|"|>…<|"|> — find the closing marker (commas inside are literal).
                 let afterOpen = rest.dropFirst(Self.strMarker.count)
                 if let close = afterOpen.range(of: Self.strMarker) {
                     let value = String(afterOpen[..<close.lowerBound])
                     if !key.isEmpty { args[key] = value }
                     rest = afterOpen[close.upperBound...]
                 } else {
-                    // Unterminated string marker — take the remainder.
                     if !key.isEmpty { args[key] = String(afterOpen) }
                     rest = ""
                 }
             } else {
-                // Bare value up to the next comma.
                 let commaIdx = rest.firstIndex(of: ",") ?? rest.endIndex
                 let raw = rest[..<commaIdx].trimmingCharacters(in: .whitespacesAndNewlines)
                 if !key.isEmpty { args[key] = ToolCallParser.coerceScalar(raw) }
                 rest = commaIdx < rest.endIndex ? rest[rest.index(after: commaIdx)...] : ""
             }
-            // Skip a separating comma (and surrounding spaces).
             while let f = rest.first, f == " " || f == "," { rest = rest.dropFirst() }
         }
         return args
     }
 
+    /// Length of the trailing suffix of `text` to keep because it might begin `tag` in a later chunk.
     private func partialSuffix(_ text: String, guarding tag: String, atEnd: Bool) -> Int {
         if atEnd { return 0 }
         let chars = Array(text); let tagChars = Array(tag)
         let maxKeep = min(chars.count, tagChars.count - 1)
         for len in stride(from: maxKeep, through: 1, by: -1) {
             if Array(chars[(chars.count - len)...]) == Array(tagChars[0 ..< len]) { return len }
+        }
+        return 0
+    }
+
+    /// Like `partialSuffix` but for any of several markers (keeps the longest matching tail).
+    private func partialSuffixAny(_ text: String, markers: [String], maxLen: Int, atEnd: Bool) -> Int {
+        if atEnd { return 0 }
+        let chars = Array(text)
+        let maxKeep = min(chars.count, maxLen - 1)
+        for len in stride(from: maxKeep, through: 1, by: -1) {
+            let suffix = String(chars[(chars.count - len)...])
+            if markers.contains(where: { $0.hasPrefix(suffix) }) { return len }
         }
         return 0
     }

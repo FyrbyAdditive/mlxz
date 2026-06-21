@@ -165,4 +165,44 @@ import Testing
         #expect(out.visibleText == "Hello! How can I help?")
         #expect(out.toolCalls.isEmpty)
     }
+
+    @Test func gemmaThoughtRoutesToReasoning() {
+        // Real Gemma-4 shape: <|channel>thought\n<channel|> then the channel's content.
+        let input = "<|channel>thought\n<channel|>The weather in Paris is 15C and sunny."
+        for cbc in [false, true] {
+            let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
+            #expect(out.reasoning == "The weather in Paris is 15C and sunny.")
+            #expect(out.visibleText == "")
+            #expect(!out.reasoning.contains("<|channel"))   // no marker leakage
+            #expect(!out.reasoning.contains("<channel|>"))
+        }
+    }
+
+    @Test func gemmaThoughtMarkersNeverLeakAsVisible() {
+        let input = "<|channel>thought <channel|>some reasoning"
+        let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: true)
+        #expect(!out.visibleText.contains("<|channel"))
+        #expect(!out.visibleText.contains("channel|>"))
+        #expect(out.reasoning.contains("some reasoning"))
+    }
+
+    @Test func gemmaThoughtThenToolCall() {
+        let input = "<|channel>thought\n<channel|>I should search.<|tool_call>call:web_search{q:<|\"|>news<|\"|>}<tool_call|>"
+        for cbc in [false, true] {
+            let out = run({ GemmaOutputParser(idPrefix: "t") }, input, charByChar: cbc)
+            #expect(out.reasoning.contains("I should search."))
+            #expect(out.toolCalls.map(\.name) == ["web_search"])
+            #expect(out.visibleText == "")
+        }
+    }
+
+    @Test func gemmaSplitChannelMarkers() {
+        var p = GemmaOutputParser(idPrefix: "t")
+        var out = OutputParse()
+        for chunk in ["<|chan", "nel>thou", "ght<chan", "nel|>cot text"] { merge(&out, p.consume(chunk)) }
+        merge(&out, p.finish())
+        #expect(out.reasoning == "cot text")
+        #expect(out.visibleText == "")
+        #expect(!out.reasoning.contains("<|"))
+    }
 }
