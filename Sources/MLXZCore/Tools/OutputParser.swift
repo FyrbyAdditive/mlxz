@@ -70,6 +70,13 @@ public enum OutputFormat: Sendable, Equatable, CaseIterable {
     /// that case (with thinking off it's the visible answer — see `GemmaOutputParser`). Qwen/harmony
     /// handle reasoning via their own parsers, so this flag is Gemma-specific.
     public var thoughtChannelIsReasoningWhenThinking: Bool { self == .gemma }
+
+    /// Whether thinking must be turned OFF when the request carries tools. Qwen3.5/3.6 pre-open a
+    /// `<think>` block on every turn; in an agentic flow the model then narrates inside it and stops
+    /// WITHOUT emitting the `<tool_call>`, so the agent stalls — we disable thinking for Qwen when
+    /// tools are present. Gemma (and others) are designed to reason AND call tools in the same turn,
+    /// so thinking stays on for them even with tools.
+    public var disablesThinkingWithTools: Bool { self == .qwenHermes }
 }
 
 /// Selects and builds the right `OutputParser` for a model. Pure and dependency-free (lives in

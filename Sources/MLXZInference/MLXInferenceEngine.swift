@@ -119,14 +119,13 @@ public struct MLXInferenceEngine: InferenceEngine {
                 var sawToolCall = false  // true if ANY tool call (native or parsed from text) was emitted
                 do {
                     let tools = request.tools.map { $0.map(Self.mapTool) }
-                    // Qwen3.5/3.6's chat template pre-opens a `<think>` block on every assistant
-                    // turn. In an agentic flow the model then narrates its plan inside that block
-                    // and stops at <|im_end|> WITHOUT ever closing `</think>` or emitting the
-                    // `<tool_call>` — so the VS Code agent gets no tool call and stalls (and the
-                    // reasoning leaks). When the request carries tools, disable thinking
-                    // (`enable_thinking: false` → the template emits an empty `<think></think>` and
-                    // goes straight to the answer/tool-call) so the model acts instead of musing.
-                    let thinkingDisabled = (tools?.isEmpty == false)
+                    let hasTools = (tools?.isEmpty == false)
+                    // Only Qwen3.5/3.6 must disable thinking when tools are present: its template
+                    // pre-opens a `<think>` block, and in an agentic flow the model narrates inside it
+                    // and stops WITHOUT emitting the `<tool_call>`, so the agent stalls. Gemma (and
+                    // others) are designed to reason AND call tools in the same turn, so thinking stays
+                    // ON for them even with tools — otherwise reasoning never appears in agentic mode.
+                    let thinkingDisabled = hasTools && outputFormat.disablesThinkingWithTools
                     let thinkingEnabled = !thinkingDisabled
                     // `enable_thinking` chat-template kwarg — only sent to formats that understand it
                     // (Qwen, Gemma). Gemma's template injects a `<|think|>` token when true, which makes
