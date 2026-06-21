@@ -6,9 +6,29 @@ import HuggingFace
 /// loader reads from), so a pre-downloaded model loads instantly later.
 public struct MLXModelDownloader: ModelDownloading {
     private let hub: HubClient
+    /// How many times to (re)attempt the whole snapshot on a transient network failure (timeout /
+    /// connection-lost). LFS shards resume from their `*.incomplete` blob across attempts; Xet shards
+    /// restart but eventually complete. Small-file progress is preserved by the cache between attempts.
+    private let maxAttempts: Int
 
-    public init(hub: HubClient = .default) {
+    public init(hub: HubClient = MLXModelDownloader.makeHubClient(), maxAttempts: Int = 5) {
         self.hub = hub
+        self.maxAttempts = max(1, maxAttempts)
+    }
+
+    /// A `HubClient` with a download-tuned URLSession. The default session's 60s request timeout fires
+    /// (`NSURLErrorTimedOut -1001`) on large multi-GB safetensors shards over the (sometimes slow) Xet
+    /// CDN, aborting the whole 30GB+ snapshot. We raise the per-request timeout (tolerate stalls) and
+    /// the resource timeout (allow a very large file to take a long time), and allow waiting for
+    /// connectivity instead of failing immediately.
+    public static func makeHubClient() -> HubClient {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300        // 5 min between bytes before giving up (was 60)
+        config.timeoutIntervalForResource = 24 * 60 * 60  // a whole shard may legitimately take ages
+        config.waitsForConnectivity = true
+        config.httpMaximumConnectionsPerHost = 4
+        let session = URLSession(configuration: config)
+        return HubClient(session: session, host: HubClient.defaultHost)
     }
 
     public func download(
@@ -50,21 +70,62 @@ public struct MLXModelDownloader: ModelDownloading {
         }
         defer { poller.cancel() }
 
-        _ = try await hub.downloadSnapshot(
-            of: repo,
-            revision: descriptor.revision ?? "main",
-            progressHandler: { @MainActor p in
-                // Mine ONLY the total from the library (it's accurate); ignore its broken byte count.
-                let tot = p.totalUnitCount
-                if tot > 0 { total.value = tot }
+        // Retry the snapshot on transient network failures: a single shard timing out (NSURLError
+        // -1001) otherwise kills the entire multi-GB download. Between attempts the HF cache keeps
+        // completed files (and LFS `*.incomplete` blobs), so a retry resumes rather than restarting
+        // from scratch. Cancellation and non-transient errors (bad repo, 404, auth) are NOT retried.
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                _ = try await hub.downloadSnapshot(
+                    of: repo,
+                    revision: descriptor.revision ?? "main",
+                    progressHandler: { @MainActor p in
+                        // Mine ONLY the total from the library (it's accurate); ignore its broken bytes.
+                        let tot = p.totalUnitCount
+                        if tot > 0 { total.value = tot }
+                    }
+                )
+                break  // success
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                guard attempt < maxAttempts, Self.isTransientNetworkError(error) else { throw error }
+                // Exponential backoff (capped): 2s, 4s, 8s, … max 30s.
+                let delayMs = min(30_000, 1_000 * (1 << min(attempt, 5)))
+                try? await Task.sleep(for: .milliseconds(delayMs))
             }
-        )
+        }
         // Final 100% (the move-into-place may complete just after the last poll).
         if total.value > 0 {
             await MainActor.run {
                 progress(DownloadProgress(fraction: 1, completedBytes: total.value, totalBytes: total.value))
             }
         }
+    }
+
+    /// Whether an error is a transient network failure worth retrying (timeout, connection lost,
+    /// network down, DNS hiccup) vs a permanent one (bad repo, 404, auth) that retrying won't fix.
+    static func isTransientNetworkError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else {
+            // Some errors wrap an URLError; check the description as a fallback.
+            return "\(error)".contains("NSURLErrorDomain")
+        }
+        let transient: Set<Int> = [
+            NSURLErrorTimedOut,
+            NSURLErrorNetworkConnectionLost,
+            NSURLErrorNotConnectedToInternet,
+            NSURLErrorCannotConnectToHost,
+            NSURLErrorCannotFindHost,
+            NSURLErrorDNSLookupFailed,
+            NSURLErrorResourceUnavailable,
+            NSURLErrorRequestBodyStreamExhausted,
+            NSURLErrorSecureConnectionFailed,
+        ]
+        return transient.contains(ns.code)
     }
 
     /// The `models--org--name` cache directory for a repo, under the first HF cache root.
