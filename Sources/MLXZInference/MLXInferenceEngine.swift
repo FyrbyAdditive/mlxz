@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXZCore
 import MLXLMCommon
 
@@ -288,6 +289,75 @@ public struct MLXInferenceEngine: InferenceEngine {
         !cache.contains { $0 is RotatingKVCache }
     }
 
+    /// Snapshot-reuse prefill for models whose caches can't be trimmed (rotating/hybrid). Looks up
+    /// the longest LRU snapshot whose tokens exactly prefix the new prompt, resumes from a COPY of it
+    /// (the LRU entry stays pristine), manually chunk-prefills up to the prompt-end boundary,
+    /// snapshots that boundary for the next turn, and returns the cache + the small remaining suffix
+    /// for the normal `generate` path (which prefills the suffix and steps the last token).
+    ///
+    /// Correctness: `RotatingKVCache.copy()`/`KVCacheSimple.copy()` deep-copy state, and resuming a
+    /// copied prefix + feeding the rest is the same op sequence as a fresh prefill (causal attention,
+    /// deterministic window eviction). Quantization is untouched: on this path the caches are always
+    /// fp16 during prefill (maybeQuantizeKVCache runs later, inside TokenIterator's first step), so
+    /// snapshots resume bit-identically to a fresh run.
+    private static func snapshotPrefill(
+        context: ModelContext,
+        box: PromptCacheBox,
+        fullInput: LMInput,
+        newTokens: [Int32],
+        parameters: GenerateParameters
+    ) -> (cache: [KVCache], suffix: LMInput.Text) {
+        let n = newTokens.count
+        let step = parameters.prefillStepSize
+        // Skip capturing when the prompt grew by less than this since the reused boundary — a
+        // near-duplicate multi-GB snapshot buys almost nothing (re-prefilling <256 tokens is cheap).
+        let captureGap = 256
+
+        // Reuse: the longest snapshot that is an exact token-prefix of this prompt.
+        let match = box.snapshotLRU.bestMatch(for: newTokens)
+        let reused = match?.tokens.count ?? 0
+        let cache = match.map { $0.modelCache.map { $0.copy() } }
+            ?? context.model.newCache(parameters: parameters)
+
+        if ProcessInfo.processInfo.environment["MLXZ_PREFIX_DIAG"] == "1" {
+            let status = match != nil ? "HIT reused=\(reused)" : "MISS"
+            FileHandle.standardError.write(
+                Data("[PREFIX-SNAPSHOT] \(status) prompt=\(n) lruSlots=\(box.snapshotLRU.count)\n".utf8))
+        }
+
+        // Flatten to 1D: VLM processors (Gemma) emit [1, seq]; LLM processors emit [seq].
+        let flat = fullInput.text.tokens.reshaped([n])
+
+        // Capture at the prompt end minus one (the TokenIterator must step at least the last token
+        // to produce the first logits). Agentic prompts grow append-only, so the prompt-end boundary
+        // of THIS turn is exactly what the NEXT turn's prompt extends.
+        let end = n - 1
+        let capture = (end - reused >= captureGap && end >= 16) ? end : reused
+
+        // Manually chunk-prefill [reused, capture), eval-ing between chunks to free each chunk's
+        // transient graph (same discipline as the model's own chunked prepare).
+        var pos = reused
+        while pos < capture {
+            let take = min(step, capture - pos)
+            let chunk = flat[pos ..< (pos + take)].expandedDimensions(axis: 0)
+            _ = context.model(chunk, cache: cache)
+            eval(cache)
+            pos += take
+        }
+
+        // Snapshot the boundary (copies — `cache` keeps advancing through generation).
+        if capture > reused {
+            box.snapshotLRU.insert(
+                tokens: Array(newTokens.prefix(capture)),
+                modelCache: cache.map { $0.copy() },
+                mtpCache: [])
+        }
+
+        // Remainder for the normal generate path (1D — model.prepare/TokenIterator batch it).
+        let suffix = LMInput.Text(tokens: flat[capture...])
+        return (cache, suffix)
+    }
+
     /// Build a generation stream that reuses a persistent KV cache for the shared prompt prefix.
     ///
     /// Runs inside `container.perform` because the cache, model, and iterator are non-Sendable.
@@ -305,15 +375,36 @@ public struct MLXInferenceEngine: InferenceEngine {
             let fullInput = try await context.processor.prepare(input: boxedInput.consume())
             let newTokens = fullInput.text.tokens.asArray(Int32.self)
 
-            // Decide how much of the existing cache to reuse. Only reuse when EVERY layer's cache can
-            // be SOUNDLY trimmed to an arbitrary prior position. A `RotatingKVCache` (the sliding-
-            // window attention layers of hybrid models like Gemma-3/4) reports `isTrimmable` while its
-            // offset is below the window, but its `trim` only decrements offset/idx without restoring
-            // dropped ring-buffer entries — trimming it back to a prefix corrupts the cache and the
-            // next prefill crashes with "[reshape] Cannot infer the shape of an empty array". So we
-            // exclude rotating caches from reuse and fall back to a fresh prefill for those models.
+            // Two reuse strategies, picked by what the model's caches support:
+            //  - TRIM-reuse (plain caches, e.g. Qwen): trim the live cache back to the common prefix.
+            //  - SNAPSHOT-reuse (rotating/hybrid caches, e.g. Gemma-3/4, gpt-oss): a `RotatingKVCache`
+            //    reports `isTrimmable` while its offset is below the window, but its `trim` only
+            //    decrements offset/idx without restoring dropped ring-buffer entries — trimming back
+            //    to a prefix corrupts it and the next prefill crashes. `copy()` IS sound, so instead
+            //    of trimming we snapshot (copy) the caches at the prompt boundary and, on the next
+            //    request, resume from a copied snapshot whose tokens exactly prefix the new prompt.
+            //    Without this, every agentic turn re-prefills the FULL history (~41s at 24K tokens).
+            let freshProbe: [KVCache]? =
+                box.cache == nil ? context.model.newCache(parameters: parameters) : nil
+            let probeCache = box.cache ?? freshProbe!
+            let trimSound = canTrimPromptCache(probeCache) && Self.isSoundlyTrimmable(probeCache)
+
+            if !trimSound {
+                // Snapshot-reuse path (rotating caches). Never touches box.cache/box.tokens — the
+                // live-trim bookkeeping is meaningless for these models.
+                let (kvCache, suffix) = Self.snapshotPrefill(
+                    context: context, box: box, fullInput: fullInput,
+                    newTokens: newTokens, parameters: parameters)
+                return try MLXLMCommon.generate(
+                    input: LMInput(text: suffix),
+                    cache: kvCache,
+                    parameters: parameters,
+                    context: context
+                )
+            }
+
             let plan: PrefixCachePlan.Decision
-            if let cache = box.cache, canTrimPromptCache(cache), Self.isSoundlyTrimmable(cache) {
+            if box.cache != nil {
                 plan = PrefixCachePlan.plan(cachedTokens: box.tokens, newTokens: newTokens)
             } else {
                 plan = .fresh
@@ -331,7 +422,8 @@ public struct MLXInferenceEngine: InferenceEngine {
                 let suffix = fullInput.text[text: plan.reuseCount...]
                 inputForGeneration = LMInput(text: suffix)
             } else {
-                kvCache = context.model.newCache(parameters: parameters)
+                // Fresh prefill: reuse the probe only if it IS fresh (no stale live cache).
+                kvCache = freshProbe ?? context.model.newCache(parameters: parameters)
                 inputForGeneration = fullInput
             }
 
