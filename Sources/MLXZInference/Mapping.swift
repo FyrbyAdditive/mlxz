@@ -209,6 +209,7 @@ extension MLXInferenceEngine {
         )
         if let topK = sampling.topK { params.topK = topK }
         if let rp = sampling.repetitionPenalty { params.repetitionPenalty = rp }
+        if perf.prefillChunk > 0 { params.prefillStepSize = perf.prefillChunk }
         return params
     }
 

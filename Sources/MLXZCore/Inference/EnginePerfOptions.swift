@@ -63,6 +63,12 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// (not recommended). Default 4_194_304 (≈4 MP, ~2048²) — ample detail for description, safe memory.
     public var maxImagePixels: Int
 
+    /// Prompt tokens processed per prefill forward pass (chunked prefill). Larger chunks = fewer
+    /// GPU sync points and better tensor-core utilization (faster TTFT on long prompts); smaller
+    /// chunks bound the per-chunk activation transient (lower peak memory). ≤0 = the fork's
+    /// default (512).
+    public var prefillChunk: Int
+
     /// Token granularity at which prefix snapshots are captured during prefill (block-aligned). A
     /// future request sharing a prefix reuses the largest block boundary ≤ the shared length, so
     /// smaller = more reuse coverage but more snapshots (more LRU RAM); larger = coarser reuse, less
@@ -88,6 +94,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         gpuCacheLimitMB: Int? = 512,
         wiredLimitMB: Int? = nil,
         maxBatch: Int = 8,
+        prefillChunk: Int = 0,
         prefixCacheSlots: Int = 16,
         prefixCacheBytesMB: Int = 2048,
         snapshotBlock: Int = 512,
@@ -103,6 +110,7 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.gpuCacheLimitMB = gpuCacheLimitMB
         self.wiredLimitMB = wiredLimitMB
         self.maxBatch = maxBatch
+        self.prefillChunk = prefillChunk
         self.prefixCacheSlots = prefixCacheSlots
         self.prefixCacheBytesMB = prefixCacheBytesMB
         self.snapshotBlock = snapshotBlock

@@ -55,6 +55,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Max requests waiting for a generation slot before returning 429. Default 0 = unbounded (always queue, never reject).")
     var maxQueue: Int = 0
 
+    @Option(name: .long, help: "Prompt tokens per prefill forward pass (chunked prefill). Larger = fewer GPU syncs and better tensor-core utilization (faster TTFT on long prompts); smaller = lower peak memory. 0 = fork default (512).")
+    var prefillChunk: Int = 0
+
     @Option(name: .long, help: "Prefix-snapshot cache slots (LRU) for cross-request reuse on the MTP path. Holds block-boundary snapshots so conversations sharing a system prompt reuse it. Each snapshot is small (~4.5MB at 10k tok, 4-bit KV). Default 16; 0 disables reuse.")
     var prefixCacheSlots: Int = 16
 
@@ -138,6 +141,7 @@ struct MLXZServe: AsyncParsableCommand {
             gpuCacheLimitMB: gpuCacheMb,
             wiredLimitMB: wiredMb > 0 ? wiredMb : nil,
             maxBatch: maxBatch,
+            prefillChunk: prefillChunk,
             prefixCacheSlots: prefixCacheSlots,
             prefixCacheBytesMB: prefixCacheMb,
             snapshotBlock: snapshotBlock,

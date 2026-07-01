@@ -32,9 +32,19 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// Fair scheduler for MTP requests (interleaves decode steps so a short request doesn't wait for
     /// a long one). Built once, shared across requests.
     private let mtpScheduler: MTPScheduler
+    /// Fair scheduler for plain snapshot-reuse requests (rotating/hybrid-cache models — Gemma-3/4,
+    /// gpt-oss). Interleaves prefill chunks and decode steps so a short request doesn't wait behind
+    /// a whole long turn. Built once, shared across requests.
+    private let plainScheduler: PlainScheduler
     /// Whether the loaded model conforms to `BatchableModel` (supports continuous batching).
     /// Captured once at load to avoid an async probe per request.
     private let isBatchable: Bool
+    /// Whether plain prefix-cache requests go to the fair `PlainScheduler` instead of the
+    /// serialized `cachedStream`. True for models whose caches CANNOT be soundly trimmed
+    /// (rotating/hybrid — they use per-request snapshot copies, so sessions are isolated and can
+    /// interleave). Trim-sound models share the mutable `box.cache` and must stay serialized at 1.
+    /// Probed once at load (see `MLXModelLoader`).
+    private let plainInterleaves: Bool
 
     /// `config.json` `model_type` (e.g. "gpt_oss", "qwen3_5"), if read at load. Refines output-format
     /// detection; nil is fine (repo id alone classifies the known families).
@@ -53,7 +63,8 @@ public struct MLXInferenceEngine: InferenceEngine {
         container: ModelContainer,
         perf: EnginePerfOptions = .default,
         isBatchable: Bool = false,
-        modelType: String? = nil
+        modelType: String? = nil,
+        trimUnsound: Bool = false
     ) {
         self.descriptor = descriptor
         self.capabilities = capabilities
@@ -69,11 +80,16 @@ public struct MLXInferenceEngine: InferenceEngine {
         self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
         self.mtpScheduler = MTPScheduler(
             container: container, snapshotBlock: perf.prefixCache ? perf.snapshotBlock : 512)
+        self.plainScheduler = PlainScheduler(container: container)
         // Concurrency the gate admits. MTP requests go to the fair scheduler (which interleaves
-        // decode steps), and batchable non-MTP requests go to the batch engine — both want N
-        // requests admitted concurrently. A plain non-batchable model still serializes at 1.
+        // decode steps), batchable non-MTP requests go to the batch engine, and non-trimmable
+        // (rotating/hybrid cache) plain models go to the fair PlainScheduler — all want N requests
+        // admitted concurrently. A trim-sound plain model (shared mutable box.cache) serializes at 1.
         let useMTPModel = perf.useMTP && capabilities.contains(.speculative)
-        self.maxConcurrency = (useMTPModel || isBatchable) ? max(1, perf.maxBatch) : 1
+        let plainInterleaves = trimUnsound && !useMTPModel && !isBatchable && perf.prefixCache
+        self.plainInterleaves = plainInterleaves
+        self.maxConcurrency =
+            (useMTPModel || isBatchable || plainInterleaves) ? max(1, perf.maxBatch) : 1
     }
 
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
@@ -199,6 +215,14 @@ public struct MLXInferenceEngine: InferenceEngine {
                             maxTokens: parameters.maxTokens ?? 2048,
                             temperature: parameters.temperature,
                             stopTokenIds: stopIds)
+                    } else if usePrefixCache && plainInterleaves && !requestHasImages {
+                        // Fair interleaving for plain snapshot-reuse models (Gemma-3/4, gpt-oss):
+                        // sessions advance one prefill chunk / one decode step per tick, so a short
+                        // request (e.g. an IDE's title-gen) doesn't wait behind a whole long turn.
+                        // Sessions resume from their own snapshot COPIES — no shared mutable cache.
+                        // (Image requests keep the vision-capable plain path below.)
+                        stream = await plainScheduler.submit(
+                            userInput: userInput, parameters: parameters, box: promptCache)
                     } else if usePrefixCache {
                         stream = try await Self.cachedStream(
                             container: container, box: promptCache,
@@ -335,7 +359,9 @@ public struct MLXInferenceEngine: InferenceEngine {
         let capture = (end - reused >= captureGap && end >= 16) ? end : reused
 
         // Manually chunk-prefill [reused, capture), eval-ing between chunks to free each chunk's
-        // transient graph (same discipline as the model's own chunked prepare).
+        // transient graph (same discipline as the model's own chunked prepare). The chunk logits
+        // are discarded UNEVALUATED — MLX's laziness means the lm_head projection never actually
+        // runs for them (verified: skipping it explicitly benched 0% on a 24K prompt).
         var pos = reused
         while pos < capture {
             let take = min(step, capture - pos)
@@ -395,12 +421,13 @@ public struct MLXInferenceEngine: InferenceEngine {
                 let (kvCache, suffix) = Self.snapshotPrefill(
                     context: context, box: box, fullInput: fullInput,
                     newTokens: newTokens, parameters: parameters)
-                return try MLXLMCommon.generate(
-                    input: LMInput(text: suffix),
-                    cache: kvCache,
-                    parameters: parameters,
-                    context: context
-                )
+                return Self.withFullPromptCount(
+                    try MLXLMCommon.generate(
+                        input: LMInput(text: suffix),
+                        cache: kvCache,
+                        parameters: parameters,
+                        context: context
+                    ), promptTokenCount: newTokens.count)
             }
 
             let plan: PrefixCachePlan.Decision
@@ -432,12 +459,41 @@ public struct MLXInferenceEngine: InferenceEngine {
             box.cache = kvCache
             box.tokens = newTokens
 
-            return try MLXLMCommon.generate(
-                input: inputForGeneration,
-                cache: kvCache,
-                parameters: parameters,
-                context: context
-            )
+            return Self.withFullPromptCount(
+                try MLXLMCommon.generate(
+                    input: inputForGeneration,
+                    cache: kvCache,
+                    parameters: parameters,
+                    context: context
+                ), promptTokenCount: newTokens.count)
+        }
+    }
+
+    /// Rewrite the final `.info` so `usage.prompt_tokens` reports the FULL prompt length. On the
+    /// reuse paths, `generate()` only sees the un-cached suffix (it reported `prompt_tokens: 1` on
+    /// a fully-reused 24K-token prompt), which breaks client-side context accounting.
+    static func withFullPromptCount(
+        _ inner: AsyncStream<Generation>, promptTokenCount: Int
+    ) -> AsyncStream<Generation> {
+        AsyncStream { continuation in
+            let task = Task {
+                for await item in inner {
+                    if case .info(let info) = item {
+                        continuation.yield(
+                            .info(
+                                GenerateCompletionInfo(
+                                    promptTokenCount: promptTokenCount,
+                                    generationTokenCount: info.generationTokenCount,
+                                    promptTime: info.promptTime,
+                                    generationTime: info.generateTime,
+                                    stopReason: info.stopReason)))
+                    } else {
+                        continuation.yield(item)
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 }

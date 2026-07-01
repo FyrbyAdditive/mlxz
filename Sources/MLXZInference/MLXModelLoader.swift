@@ -77,8 +77,22 @@ public struct MLXModelLoader: ModelLoading {
         // name), so query the loaded model rather than guessing from the id. Also probe whether the
         // model supports continuous batching (BatchableModel) — captured once here so the engine
         // doesn't re-probe per request.
-        let (isVisionModel, isBatchable) = await container.perform { context in
-            (context.model is any VLMModel, context.model is BatchableModel)
+        // `trimUnsound`: whether the model's caches can NOT be soundly trimmed for prefix reuse
+        // (any rotating/hybrid layer — Gemma-3/4, gpt-oss, or anything under --max-kv-size). Those
+        // models use per-request snapshot copies, which makes their plain requests safe to
+        // interleave via the fair PlainScheduler. Probed on a throwaway cache (no GPU work).
+        let probeParameters: GenerateParameters = {
+            var p = GenerateParameters()
+            p.maxKVSize = perf.maxKVSize
+            return p
+        }()
+        let (isVisionModel, isBatchable, trimUnsound) = await container.perform { context in
+            let probe = context.model.newCache(parameters: probeParameters)
+            return (
+                context.model is any VLMModel,
+                context.model is BatchableModel,
+                !(canTrimPromptCache(probe) && MLXInferenceEngine.isSoundlyTrimmable(probe))
+            )
         }
         var capabilities = ModelCapabilityDetector.detect(
             repoID: descriptor.repoID, hasVisionConfig: isVisionModel)
@@ -113,7 +127,8 @@ public struct MLXModelLoader: ModelLoading {
             container: container,
             perf: perf,
             isBatchable: isBatchable,
-            modelType: modelType
+            modelType: modelType,
+            trimUnsound: trimUnsound
         )
     }
 
