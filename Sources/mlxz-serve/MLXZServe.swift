@@ -437,6 +437,13 @@ struct MLXZServe: AsyncParsableCommand {
                 }
                 specSamples.append(Double(perArm[false]!.tokens) / perArm[false]!.seconds)
                 plainSamples.append(Double(perArm[true]!.tokens) / perArm[true]!.seconds)
+                // Per-iteration samples: sustained load slows the ALU-bound spec rounds
+                // (drafter + M>1 verify) while bandwidth-bound plain decode barely drifts —
+                // print both so burst (early, cool GPU) vs sustained (late) is visible.
+                benchPrint(String(
+                    format: "    iter %d (%@ first): spec %.1f  plain %.1f tok/s",
+                    i, specFirst ? "spec" : "plain",
+                    specSamples.last!, plainSamples.last!))
             }
             let specMed = median(specSamples)
             let plainMed = median(plainSamples)

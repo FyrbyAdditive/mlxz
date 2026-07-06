@@ -1,5 +1,56 @@
 # DSpark findings ledger (M5 Max, 2026-07)
 
+## M4/M5 — performance envelope + regression gates (2026-07-07)
+
+### Headline (order-controlled `--bench-compare`, cap 3, 5 paired iters, Release, clean process table)
+
+| config | chat | code | math |
+|---|---|---|---|
+| Qwen3-8B-4bit, kvBits=4 (default) | 0.82× | 0.90× | 0.95× |
+| Qwen3-8B-4bit, fp16 KV | 0.90× | 0.99× | **1.09×** |
+| Qwen3-14B-4bit, fp16 KV | 0.89× | 1.02× | **1.08×** |
+
+Bursty/interactive use (cool GPU, per-prompt alternation) is better: 8B fp16 KV measured
+1.05×/1.16×/1.29× (chat/code/math); bf16 targets 1.24×/1.43×/1.47× (plain decode is
+memory-bound there, so verify headroom is large).
+
+### Why sustained ≠ burst: asymmetric thermal sensitivity
+
+Spec STEPWALL climbs monotonically 24.3ms → 34ms across ~40 consecutive requests while
+plain decode stays flat (±1–3%): the drafter+verify rounds are ALU-bound (sensitive to
+sustained-load GPU clock drop), plain decode is DRAM-bandwidth-bound (insensitive).
+**Order-controlled A/B does NOT cancel thermal drift when arms have asymmetric
+sensitivity** — report burst and sustained numbers separately.
+
+### Context envelope (the quantized-KV M>1 cliff in practice)
+
+At ~3.2k-token agentic context with kvBits=4, DSpark decode drops to ~69 tok/s vs plain
+~118 tok/s (0.6×) — the M>1 quantized-attention penalty grows with context. Consequence:
+**`--dspark-draft auto` only engages when kvBits is off (fp16 KV)**; an explicit drafter
+repo forces attach anywhere. Fixing the quantized small-M attention path (per-row qmv
+split — SDPA rows are independent) is the follow-up that would reopen the default config
+AND speed up MTP verify.
+
+### Regression gates (all PASSED)
+
+- **MTP control (27B + MTP drafter, refactored scheduler)**: 44.39 tok/s (±0.2%) vs the
+  documented 27.20 — the delta is the Debug→Release uplift (BASELINE.md numbers were
+  Debug builds; the 27B was CPU-bound, not GPU-bound). No regression; ledger refresh due.
+- **Agentic prefix reuse with DSpark**: turn-2 reuses the 2560-token snapshot (incl.
+  drafter ctx aux slot), TTFT 2.25s → 0.46s. Plain trim-reuse is finer-grained (0.11s) —
+  snapshot-boundary granularity, same policy as MTP.
+- **Concurrency c=4**: aggregate 99.6 (DSpark) vs 101.2 (plain) tok/s — parity; the
+  speculative scheduler additionally gives fair per-request latency (25–29 tok/s each)
+  where the plain path serializes FIFO.
+
+### Where DSpark loses (bound the claim)
+
+Chat content (low acceptance ~2.2/step), sustained heavy load, quantized KV at ctx ≥ ~2k,
+and very fast baselines (M5 Max plain decode ~100 tok/s leaves ~6ms/round of headroom).
+Wins: math/code content, fp16 KV, bursty interactive use, slower/bigger targets, bf16
+targets. Same-machine Python-port oracle for context: 1.11–1.21× (8B), 1.16× (14B),
+short bursty runs.
+
 ## M3 — speculative sampling losslessness (2026-07-07)
 
 Three-layer proof that temperature > 0 output preserves the target distribution:

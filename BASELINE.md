@@ -235,3 +235,25 @@ for its correctness/safety fixes. No further Metal/shader change is warranted on
 remaining headroom is hardware-bound (already realized by the M5 tensor units). Should this server ever
 run on **pre-M5 silicon (gen <17)**, NAX won't engage there and prefill will be ~3.5× slower — the
 `--bench` harness will surface that immediately.
+
+---
+
+## Experiment: DSpark speculative decoding (2026-07-07, dspark branch)
+
+DeepSeek DSpark (arXiv:2606.19348) drafters for Qwen3-8B/14B, Swift port in the fork
+(MLXLMCommon/DSpark), auto-attach via --dspark-draft. Full evidence ledger:
+docs/dspark/findings.md. Outcome summary:
+
+- Correctness: drafter parity EXACT vs the Python reference; greedy divergence 2.04%/token
+  vs a measured 2.67%/token no-speculation kernel-shape ceiling (byte-identity across
+  M=1/M>1 forwards is unattainable on Metal — 1.0-1.3% of greedy positions are exact bf16
+  ties); sampling distribution-exact (chi-square) with teacher-forced logprob parity.
+- Performance: WINS on math/code with fp16 KV (sustained 1.08-1.09×, bursty up to 1.29×;
+  bf16 targets up to 1.47×); LOSES on quantized KV at ctx ≥ ~2k (M>1 attention cliff) and
+  on chat content. Auto-attach therefore requires --kv-bits 0.
+- ⚠️ LEDGER CORRECTION: all pre-2026-07 numbers in this file were DEBUG builds. Release:
+  27B+MTP decodes 44.4 tok/s (not 27.2), Qwen3-8B-4bit 103.6 tok/s (not ~48). Fast models
+  are CPU-bound in Debug. Re-baseline in Release before the next optimization pass.
+- Follow-ups: per-row qmv split for quantized small-M verify attention (fixes the cliff,
+  also speeds MTP verify); n-gram lookup drafting (the Python port commits ~6 tok/round on
+  copy runs); Gemma4 target (needs full-cache + forced-window masks); cap auto-controller.

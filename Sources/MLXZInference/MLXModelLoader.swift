@@ -132,11 +132,24 @@ public struct MLXModelLoader: ModelLoading {
         // DSpark draft-model speculation: attach the official drafter (auto-resolved for
         // supported targets, or an explicit repo). Auto mode is best-effort — any failure
         // (offline, incompatible) logs and serves plain; an explicit repo failure throws.
+        //
+        // Measured envelope (docs/dspark/findings.md): with a QUANTIZED KV cache the M>1
+        // verify forward falls off the fast attention kernel (2.5–7× per-step penalty,
+        // growing with context — 0.6× net at 3k ctx), so AUTO only engages on full-precision
+        // KV, where DSpark wins (math/code ≥1.08× sustained, up to 1.3× bursty). An
+        // explicit --dspark-draft <repo> still forces attach on any config.
         var dsparkRuntime: DSparkRuntimeBox? = nil
         if draftModelID == nil, dsparkDraft.lowercased() != "off" {
             let auto = dsparkDraft.lowercased() == "auto"
+            if auto, perf.kvBits != nil {
+                progress(LoadProgress(
+                    fraction: nil,
+                    detail: "DSpark auto: skipped (quantized KV cache penalizes multi-token "
+                        + "verify; use --kv-bits 0 or an explicit --dspark-draft to enable)"))
+            }
             let resolved = auto
-                ? DrafterPairing.dsparkDrafterRepoID(forTarget: descriptor.repoID)
+                ? (perf.kvBits == nil
+                    ? DrafterPairing.dsparkDrafterRepoID(forTarget: descriptor.repoID) : nil)
                 : dsparkDraft
             if let drafterRepo = resolved {
                 do {
