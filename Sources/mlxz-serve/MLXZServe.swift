@@ -43,6 +43,15 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Attach a standalone MTP drafter checkpoint (repo id) to the model for draft-model speculative decoding.")
     var mtpDraft: String?
 
+    @Option(name: .long, help: "DSpark speculative decoding: 'auto' (default) attaches the official deepseek-ai drafter when the target model is supported (Qwen3 4B/8B/14B), 'off' disables, or pass an explicit drafter repo id.")
+    var dsparkDraft: String = "auto"
+
+    @Option(name: .long, help: "DSpark draft-block cap: tokens drafted+verified per round (1..block_size). Verify cost grows per token on Apple Silicon — measured optimum 2–3. Default 3.")
+    var draftBlock: Int = 3
+
+    @Option(name: .long, help: "DSpark confidence-trim threshold on cumulative survival probability (0..1). Trims low-confidence draft tails before verify; output unchanged. 0 = off (default).")
+    var confidenceThreshold: Float = 0
+
     @Option(name: .long, help: "Bound MLX's GPU buffer cache to N MB (default 512). Prevents MLX hoarding multi-GB of scratch buffers next to a large model. 0 disables the cache.")
     var gpuCacheMb: Int = 512
 
@@ -92,6 +101,12 @@ struct MLXZServe: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Measure the speculative verify-cost curve (target forward over M=1..8 tokens vs a warm KV cache at several context lengths), fit ms ≈ a + b·M per context, and exit. Input to the DSpark go/no-go ceiling projection and draft-cap choice.")
     var benchVerifyCurve: Bool = false
+
+    @Flag(name: .long, help: "Losslessness gate: run the checked-in prompt suite (chat/code/math) greedy twice — speculative decoding ON vs plain decode — in ONE process on the same loaded weights, and compare outputs. Byte-identity across M=1 vs M>1 forward shapes is unattainable on Metal (measured: ~1.3% of greedy positions are EXACT bf16 ties; pure mlx_lm flips 1.0%/token replaying its own tokens in 4-token forwards), so the gate passes when the estimated divergence rate stays within --tie-flip-budget. Exits non-zero above budget.")
+    var benchLossless: Bool = false
+
+    @Option(name: .long, help: "Max acceptable per-token divergence rate for --bench-lossless (near-tie flips from kernel-shape numerics). Default 0.03, just above the measured pure-mlx_lm ceiling for 4-bit weights + 4-bit KV (2.67%/token; bf16 ≈1.0%; see docs/dspark/findings.md). Anything above indicates a real spec bug.")
+    var tieFlipBudget: Double = 0.03
 
     @Option(name: .long, help: "Comma-separated context lengths for --bench-verify-curve. Default 512,8192,32768.")
     var verifyCtx: String = "512,8192,32768"
@@ -144,6 +159,8 @@ struct MLXZServe: AsyncParsableCommand {
             maxKVSize: maxKvSize,
             prefixCache: prefixCache,
             useMTP: mtp,
+            dsparkBlockCap: draftBlock,
+            dsparkConfidenceThreshold: confidenceThreshold,
             gpuCacheLimitMB: gpuCacheMb,
             wiredLimitMB: wiredMb > 0 ? wiredMb : nil,
             maxBatch: maxBatch,
@@ -154,7 +171,8 @@ struct MLXZServe: AsyncParsableCommand {
             reasoningTokenBudget: reasoningBudget > 0 ? reasoningBudget : nil
         )
         let manager = ModelManager(
-            loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft), logger: logger)
+            loader: MLXModelLoader(perf: perf, draftModelID: mtpDraft, dsparkDraft: dsparkDraft),
+            logger: logger)
 
         logger.info("loading model (first run downloads from HuggingFace)…", metadata: ["model": .string(model)])
         try await manager.load(descriptor)
@@ -182,6 +200,16 @@ struct MLXZServe: AsyncParsableCommand {
                     points.first { $0.ctx == f.ctx && $0.m == 1 }?.medianMs ?? 0,
                     points.first { $0.ctx == f.ctx && $0.m == 8 }?.medianMs ?? 0))
             }
+            return
+        }
+
+        if benchLossless {
+            guard let engine = await manager.currentEngine() else {
+                benchPrint("bench-lossless: no engine loaded")
+                throw ExitCode(2)
+            }
+            let flipRate = try await runLossless(engine: engine)
+            if flipRate > tieFlipBudget { throw ExitCode(1) }
             return
         }
 
@@ -295,6 +323,107 @@ struct MLXZServe: AsyncParsableCommand {
         if tpsVarPct >= 3 {
             benchPrint("  ⚠️ run-to-run variance ≥3% — signal too noisy to trust a 5% win; rerun on a quiet machine.")
         }
+    }
+
+    // MARK: - Losslessness gate (--bench-lossless)
+
+    /// One arm's collected output: reasoning and visible text kept separate so a token that
+    /// moves across the reasoning/answer boundary can't alias to an "identical" transcript.
+    private struct ArmOutput {
+        var reasoning = ""
+        var text = ""
+        var tokens = 0
+        var seconds = 0.0
+        var combined: String { reasoning + "\u{241F}" + text }
+    }
+
+    private func collectArm(
+        engine: any InferenceEngine, prompt: String, speculationDisabled: Bool
+    ) async throws -> ArmOutput {
+        let request = GenerationRequest(
+            messages: [ChatMessage(role: .user, text: prompt)],
+            sampling: SamplingParameters(temperature: 0),
+            maxTokens: benchMaxTokens,
+            speculative: speculationDisabled ? SpeculativeConfig(mode: .disabled) : nil,
+            reasoningTokenBudget: 0)
+        var out = ArmOutput()
+        let t0 = Date()
+        let stream = try await engine.generate(request)
+        for try await event in stream {
+            switch event {
+            case .reasoningDelta(let s): out.reasoning += s
+            case .textDelta(let s): out.text += s
+            case .completed(let result): out.tokens = result.usage.completionTokens
+            default: break
+            }
+        }
+        out.seconds = Date().timeIntervalSince(t0)
+        return out
+    }
+
+    /// Greedy divergence gate: speculative ON vs plain decode, same process, same weights.
+    /// Divergences are expected ONLY from exact-tie kernel-shape numerics (M=1 vs M>1
+    /// forwards resolve bf16 logit ties differently — reproducible in pure mlx_lm with no
+    /// speculation involved). Returns the estimated per-token divergence rate; the caller
+    /// gates it against --tie-flip-budget. Also reports the informal per-suite speed ratio
+    /// (order-controlled A/B comes via --bench-compare).
+    private func runLossless(engine: any InferenceEngine) async throws -> Double {
+        benchPrint("=== lossless gate (greedy, maxTokens=\(benchMaxTokens)) ===")
+        var mismatches = 0
+        var divergences = 0
+        var tokensObserved = 0.0  // tokens generated up to first divergence (or full output)
+        for (suite, prompts) in BenchPrompts.all {
+            var specSeconds = 0.0, plainSeconds = 0.0
+            var specTokens = 0, plainTokens = 0
+            for (i, prompt) in prompts.enumerated() {
+                let spec = try await collectArm(
+                    engine: engine, prompt: prompt, speculationDisabled: false)
+                let plain = try await collectArm(
+                    engine: engine, prompt: prompt, speculationDisabled: true)
+                specSeconds += spec.seconds; plainSeconds += plain.seconds
+                specTokens += spec.tokens; plainTokens += plain.tokens
+                if spec.combined == plain.combined {
+                    tokensObserved += Double(plain.tokens)
+                    benchPrint(String(format: "  %@[%d] OK (%d tok, spec %.2fs vs plain %.2fs)",
+                                      suite, i, spec.tokens, spec.seconds, plain.seconds))
+                } else {
+                    mismatches += 1
+                    divergences += 1
+                    let a = Array(spec.combined), b = Array(plain.combined)
+                    let firstDiff = zip(a, b).enumerated().first { $1.0 != $1.1 }?.offset
+                        ?? min(a.count, b.count)
+                    // Tokens survived before the flip ≈ chars-to-divergence at this
+                    // output's own chars/token ratio (an estimate; the gate is a rate bound,
+                    // not an exact count).
+                    let charsPerTok = max(1.0, Double(b.count) / Double(max(1, plain.tokens)))
+                    tokensObserved += Double(firstDiff) / charsPerTok
+                    let ctx = { (chars: [Character]) -> String in
+                        String(chars[max(0, firstDiff - 40) ..< min(chars.count, firstDiff + 40)])
+                    }
+                    benchPrint("  \(suite)[\(i)] DIVERGED at char \(firstDiff) (spec \(a.count) chars, plain \(b.count) chars)")
+                    benchPrint("    spec : …\(ctx(a))…")
+                    benchPrint("    plain: …\(ctx(b))…")
+                }
+            }
+            let ratio = specSeconds > 0
+                ? (Double(plainTokens) / plainSeconds) > 0
+                    ? (Double(specTokens) / specSeconds) / (Double(plainTokens) / plainSeconds)
+                    : 0
+                : 0
+            benchPrint(String(
+                format: "  -- %@: spec %.1f tok/s vs plain %.1f tok/s (%.2fx, informal)",
+                suite, Double(specTokens) / max(specSeconds, 0.001),
+                Double(plainTokens) / max(plainSeconds, 0.001), ratio))
+        }
+        let flipRate = tokensObserved > 0 ? Double(divergences) / tokensObserved : 0
+        benchPrint(String(
+            format: "estimated divergence rate: %.2f%%/token over %d prompts (%d diverged; budget %.2f%%)",
+            flipRate * 100, BenchPrompts.all.reduce(0) { $0 + $1.prompts.count },
+            divergences, tieFlipBudget * 100))
+        benchPrint(flipRate <= tieFlipBudget
+            ? "=== lossless gate PASSED (divergence within the exact-tie budget) ==="
+            : "=== lossless gate FAILED (divergence exceeds the exact-tie budget — spec bug suspected) ===")
+        return flipRate
     }
 
     /// Run one generation, splitting wall time into TTFT (to first token) and decode (the rest).

@@ -29,9 +29,11 @@ public struct MLXInferenceEngine: InferenceEngine {
     /// Continuous-batching engine for plain (non-MTP) requests, so concurrent requests decode
     /// together instead of being serialized/rejected. Built once, shared across requests.
     private let batchEngine: BatchGenerationEngine
-    /// Fair scheduler for MTP requests (interleaves decode steps so a short request doesn't wait for
-    /// a long one). Built once, shared across requests.
-    private let mtpScheduler: MTPScheduler
+    /// Fair scheduler for speculative requests — MTP or DSpark (interleaves decode steps so
+    /// a short request doesn't wait for a long one). Built once, shared across requests.
+    private let speculativeScheduler: SpeculativeScheduler
+    /// The DSpark drafter attached at load (nil = no DSpark for this model).
+    private let dspark: DSparkRuntimeBox?
     /// Fair scheduler for plain snapshot-reuse requests (rotating/hybrid-cache models — Gemma-3/4,
     /// gpt-oss). Interleaves prefill chunks and decode steps so a short request doesn't wait behind
     /// a whole long turn. Built once, shared across requests.
@@ -64,7 +66,8 @@ public struct MLXInferenceEngine: InferenceEngine {
         perf: EnginePerfOptions = .default,
         isBatchable: Bool = false,
         modelType: String? = nil,
-        trimUnsound: Bool = false
+        trimUnsound: Bool = false,
+        dspark: DSparkRuntimeBox? = nil
     ) {
         self.descriptor = descriptor
         self.capabilities = capabilities
@@ -72,24 +75,29 @@ public struct MLXInferenceEngine: InferenceEngine {
         self.perf = perf
         self.isBatchable = isBatchable
         self.modelType = modelType
+        self.dspark = dspark
         self.outputFormat = OutputParserFactory.detectFormat(
             repoID: descriptor.repoID, modelType: modelType, capabilities: capabilities)
         self.promptCache = PromptCacheBox(
             prefixCacheSlots: perf.prefixCache ? perf.prefixCacheSlots : 0,
             prefixCacheBytesMB: perf.prefixCacheBytesMB)
         self.batchEngine = BatchGenerationEngine(container: container, maxBatch: perf.maxBatch)
-        self.mtpScheduler = MTPScheduler(
-            container: container, snapshotBlock: perf.prefixCache ? perf.snapshotBlock : 512)
+        self.speculativeScheduler = SpeculativeScheduler(
+            container: container, snapshotBlock: perf.prefixCache ? perf.snapshotBlock : 512,
+            mode: dspark.map { .dspark($0) } ?? .mtp)
         self.plainScheduler = PlainScheduler(container: container)
-        // Concurrency the gate admits. MTP requests go to the fair scheduler (which interleaves
-        // decode steps), batchable non-MTP requests go to the batch engine, and non-trimmable
-        // (rotating/hybrid cache) plain models go to the fair PlainScheduler — all want N requests
-        // admitted concurrently. A trim-sound plain model (shared mutable box.cache) serializes at 1.
+        // Concurrency the gate admits. Speculative requests (MTP or DSpark) go to the fair
+        // scheduler (which interleaves decode steps), batchable non-MTP requests go to the
+        // batch engine, and non-trimmable (rotating/hybrid cache) plain models go to the fair
+        // PlainScheduler — all want N requests admitted concurrently. A trim-sound plain
+        // model (shared mutable box.cache) serializes at 1.
         let useMTPModel = perf.useMTP && capabilities.contains(.speculative)
-        let plainInterleaves = trimUnsound && !useMTPModel && !isBatchable && perf.prefixCache
+        let plainInterleaves =
+            trimUnsound && !useMTPModel && dspark == nil && !isBatchable && perf.prefixCache
         self.plainInterleaves = plainInterleaves
         self.maxConcurrency =
-            (useMTPModel || isBatchable || plainInterleaves) ? max(1, perf.maxBatch) : 1
+            (useMTPModel || dspark != nil || isBatchable || plainInterleaves)
+            ? max(1, perf.maxBatch) : 1
     }
 
     /// Bench-only entry point: the speculative verify-cost curve (see `VerifyCurveBench`).
@@ -117,19 +125,27 @@ public struct MLXInferenceEngine: InferenceEngine {
         // Use native MTP self-speculative decoding whenever the model has an MTP head (it is a
         // pure speedup with identical output), unless the request explicitly opts out by setting
         // a non-MTP speculative mode. Text-only requests without a fixed seed.
+        let specDisabled = request.speculative?.mode == .disabled
         let mtpOptOut: Bool = {
             if case .draftModel = request.speculative?.mode { return true }
-            return false
+            return specDisabled
         }()
-        // Image requests must take the vision-capable plain path: both the MTP scheduler and the
-        // continuous-batching engine are TEXT-ONLY (they prepare `.text.tokens` and drop the image
+        // Image requests must take the vision-capable plain path: both the speculative scheduler and
+        // the continuous-batching engine are TEXT-ONLY (they prepare `.text.tokens` and drop the image
         // pixel features), so routing an image request through either silently discards the image and
         // the model "sees" nothing. Keep them on `container.generate`, which runs the full VLM
         // prepare/merge (mergeInputIdsWithImageFeatures).
         let requestHasImages = request.messages.contains { $0.hasImages }
         let useMTP = perf.useMTP
+            && dspark == nil
             && capabilities.contains(.speculative)
             && !mtpOptOut
+            && !requestHasImages
+        // DSpark draft-model speculation (standalone drafter attached at load). Greedy uses
+        // exact-argmax verification; temperature > 0 uses speculative sampling (accept
+        // w.p. min(1, p/q) + residual resample), which preserves the target distribution.
+        let useDSpark = dspark != nil
+            && !specDisabled
             && !requestHasImages
 
         // Capture only Sendable values (`request`, `container`, `parameters`). The non-Sendable
@@ -200,12 +216,12 @@ public struct MLXInferenceEngine: InferenceEngine {
                             tools: tools, additionalContext: additionalContext)
                     }
                     let stream: AsyncStream<Generation>
-                    if useMTP {
-                        // Native MTP self-speculative decoding via the fair scheduler: requests
+                    if useMTP || useDSpark {
+                        // Speculative decoding (MTP or DSpark) via the fair scheduler: requests
                         // interleave one decode step at a time, so a short request doesn't wait for a
-                        // long one to finish (MTP can't batch, but it can be fair). Whole-prefix cache
-                        // reuse via the LRU on the PromptCacheBox.
-                        stream = await mtpScheduler.submit(
+                        // long one to finish (speculation can't batch, but it can be fair). Whole-
+                        // prefix cache reuse via the LRU on the PromptCacheBox.
+                        stream = await speculativeScheduler.submit(
                             userInput: userInput, parameters: parameters,
                             box: usePrefixCache ? promptCache : nil,
                             reasoningBudget: reasoningBudget)

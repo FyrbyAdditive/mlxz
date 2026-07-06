@@ -105,7 +105,7 @@ actor PlainScheduler {
             let out = outBox.consume()
             active = out.stillActive
             for ins in out.snapshots {
-                ins.lru.insert(tokens: ins.tokens, modelCache: ins.model, mtpCache: ins.mtp)
+                ins.lru.insert(tokens: ins.tokens, modelCache: ins.model, mtpCache: ins.aux)
             }
             await Task.yield()
         }
@@ -147,7 +147,7 @@ actor PlainScheduler {
                 entry.session.stepOnce(context: context, contended: contended)
                 if let snap = entry.session.takeCapturedSnapshot(), let lru = entry.lru {
                     snapshots.append(
-                        SnapshotInsert(lru: lru, tokens: snap.tokens, model: snap.model, mtp: []))
+                        SnapshotInsert(lru: lru, tokens: snap.tokens, model: snap.model, aux: []))
                 }
                 steps += 1
             }

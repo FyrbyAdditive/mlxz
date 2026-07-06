@@ -43,4 +43,37 @@ public enum DrafterPairing {
         }
         return (nil, repoID)
     }
+
+    // MARK: - DSpark drafters (deepseek-ai/dspark_*_block7)
+
+    /// Known official DSpark drafters, longest target-id first (so `qwen3-14b` wins before
+    /// `qwen3-4b` could be probed). Matching is quantization-agnostic — the drafter pairs
+    /// with the MODEL, not its quant (mirrors mlx-dspark's registry). Gemma4 lands with the
+    /// Gemma4 target milestone.
+    private static let dsparkRegistry: [(id: String, drafter: String)] = [
+        ("qwen3-14b", "deepseek-ai/dspark_qwen3_14b_block7"),
+        ("qwen3-8b", "deepseek-ai/dspark_qwen3_8b_block7"),
+        ("qwen3-4b", "deepseek-ai/dspark_qwen3_4b_block7"),
+    ]
+
+    /// The official DSpark drafter repo for a target model, or nil if none is registered.
+    /// `mlx-community/Qwen3-8B-4bit` → `deepseek-ai/dspark_qwen3_8b_block7`.
+    public static func dsparkDrafterRepoID(forTarget repoID: String) -> String? {
+        let name = split(repoID).name.lowercased()
+        let nameNoDash = name.replacingOccurrences(of: "-", with: "")
+        for entry in dsparkRegistry {
+            if name.contains(entry.id)
+                || nameNoDash.contains(entry.id.replacingOccurrences(of: "-", with: ""))
+            {
+                return entry.drafter
+            }
+        }
+        return nil
+    }
+
+    /// True if `repoID` names a standalone DSpark drafter checkpoint (which holds only the
+    /// drafter network and cannot be served as a model).
+    public static func isDSparkDrafter(_ repoID: String) -> Bool {
+        split(repoID).name.lowercased().contains("dspark")
+    }
 }

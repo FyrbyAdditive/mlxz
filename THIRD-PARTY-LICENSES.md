@@ -43,8 +43,21 @@ incorporate Apache-2.0/MIT-licensed components.
 | fmt | MIT-style (permissive) |
 | metal-cpp (Apple) | Apache-2.0 |
 
+## Reference implementations (ported, not linked)
+
+The DSpark speculative-decoding support (in mlxz and in the mlx-swift-lm-mtp fork) is a
+Swift port informed by these MIT-licensed reference implementations; algorithm per the
+paper "DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive
+Generation" (DeepSeek-AI, arXiv:2606.19348):
+
+| Reference | License | Source |
+| --- | --- | --- |
+| DeepSpec (DeepSeek-AI) — official DSpark training/eval code + checkpoints | MIT | https://github.com/deepseek-ai/DeepSpec |
+| mlx-dspark (Abdur Rahim) — Python MLX inference port | MIT | https://github.com/ARahim3/mlx-dspark |
+
 ## Model weights (not bundled)
 
-mlxz downloads model weights (e.g. Qwen3.6) from Hugging Face at runtime; it does not bundle
-or redistribute them. Those weights carry their own separate license (see the model's Hugging
-Face repository), which governs model use/redistribution independently of this code license.
+mlxz downloads model weights (e.g. Qwen3.6, DSpark drafters) from Hugging Face at runtime;
+it does not bundle or redistribute them. Those weights carry their own separate license
+(see the model's Hugging Face repository), which governs model use/redistribution
+independently of this code license.

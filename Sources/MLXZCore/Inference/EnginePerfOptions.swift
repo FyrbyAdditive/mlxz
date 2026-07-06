@@ -25,6 +25,18 @@ public struct EnginePerfOptions: Sendable, Equatable {
     /// Pure speedup (identical output); on by default for MTP-capable models.
     public var useMTP: Bool
 
+    /// DSpark draft-block cap: how many of the drafter's block positions are drafted and
+    /// verified per round. The verify cost grows per token on Apple Silicon, so small caps
+    /// win: measured optimum 2–3 (block-7 verify is a net LOSS locally). Clamped to the
+    /// drafter's block size. Default 3.
+    public var dsparkBlockCap: Int
+
+    /// DSpark confidence-trim threshold on cumulative survival probability (paper Eq. 7–8):
+    /// the draft is truncated to the longest prefix whose survival stays ≥ this. Saves
+    /// verify tokens on low-confidence tails; output is unchanged (the target verifies
+    /// whatever remains). ≤0 disables (default until tuned in M4).
+    public var dsparkConfidenceThreshold: Float
+
     /// Upper bound on MLX's GPU buffer cache, in MB. MLX defaults its cache to the (large) memory
     /// limit, so it can hoard many GB of buffers alongside a multi-GB model — driving memory
     /// pressure and weight eviction (a silent, catastrophic slowdown). MLX's own docs recommend a
@@ -91,6 +103,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         maxKVSize: Int? = nil,
         prefixCache: Bool = true,
         useMTP: Bool = true,
+        dsparkBlockCap: Int = 3,
+        dsparkConfidenceThreshold: Float = 0,
         gpuCacheLimitMB: Int? = 512,
         wiredLimitMB: Int? = nil,
         maxBatch: Int = 8,
@@ -107,6 +121,8 @@ public struct EnginePerfOptions: Sendable, Equatable {
         self.maxKVSize = maxKVSize
         self.prefixCache = prefixCache
         self.useMTP = useMTP
+        self.dsparkBlockCap = dsparkBlockCap
+        self.dsparkConfidenceThreshold = dsparkConfidenceThreshold
         self.gpuCacheLimitMB = gpuCacheLimitMB
         self.wiredLimitMB = wiredLimitMB
         self.maxBatch = maxBatch

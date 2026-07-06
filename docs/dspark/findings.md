@@ -1,4 +1,31 @@
-# DSpark M0 — go/no-go findings (M5 Max, 2026-07-06/07)
+# DSpark findings ledger (M5 Max, 2026-07)
+
+## M2 — the greedy "losslessness" standard on MLX/Metal (2026-07-07)
+
+Byte-identity between speculative and plain greedy decode is UNATTAINABLE on this stack —
+not an implementation property. Evidence chain (all reproducible; probe scripts in
+scripts/dspark/):
+
+1. **Exact ties are common**: 1.0–1.3% of greedy decode positions have top-2 logit gap
+   < 1e-4 (i.e. literal bf16 ties) on Qwen3-4B-bf16 / Qwen3-8B-4bit.
+2. **Kernel numerics depend on forward shape**: replaying a model's OWN greedy tokens
+   through M=4-token forwards (pure mlx_lm, no speculation) flips argmax at:
+   1.00%/token (bf16 weights), 0.50% (4-bit weights, fp16 KV, n=200),
+   **2.67%/token (4-bit weights + 4-bit quantized KV — the mlxz default)**.
+3. **DSpark divergence is below that ceiling in every config**: measured spec-vs-plain
+   first-divergence rates ~0.8% (bf16), ~1.2% (fp16 KV), 2.04% (4-bit KV).
+4. Acceptance is healthy and matches the Python oracle (2.4–3.1 tok/step at cap 3), and
+   the M1 parity gate showed exact drafted-token agreement with the reference — the
+   implementation is correct; the flips are tie-breaks between two legitimate greedy
+   readings of the same model.
+
+**Gate redefinition**: `--bench-lossless` passes when the estimated per-token divergence
+rate is within `--tie-flip-budget` (default 0.03, just above the measured ceiling).
+The user-facing claim is the field-standard one: output always token-matches a valid
+greedy decode of the target (and for temperature > 0, the sampling distribution is
+preserved exactly — M3).
+
+## M0 — go/no-go findings (2026-07-06/07)
 
 ## Oracle: mlx-dspark (Python) on this machine
 

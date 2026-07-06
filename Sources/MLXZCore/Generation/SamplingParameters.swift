@@ -32,6 +32,9 @@ public struct SpeculativeConfig: Sendable, Equatable {
         case mtp
         /// Use a separate small draft model identified by repo id.
         case draftModel(modelID: String)
+        /// Opt this request out of ALL speculative decoding (plain decode). Used by the
+        /// losslessness benchmark to compare speculative vs plain output in one process.
+        case disabled
     }
 
     public var mode: Mode

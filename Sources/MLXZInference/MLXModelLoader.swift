@@ -19,18 +19,26 @@ public struct MLXModelLoader: ModelLoading {
     private let perfProvider: @Sendable () -> EnginePerfOptions
     /// Default drafter (e.g. from `mlxz-serve --mtp-draft`). A per-load `draftModelID` overrides it.
     private let defaultDraftModelID: String?
+    /// DSpark drafter policy: "auto" (default — attach the official drafter when the target
+    /// is supported), "off" (never), or an explicit drafter repo id.
+    private let dsparkDraft: String
 
-    public init(perf: EnginePerfOptions = .default, draftModelID: String? = nil) {
-        self.init(perfProvider: { perf }, draftModelID: draftModelID)
+    public init(
+        perf: EnginePerfOptions = .default, draftModelID: String? = nil,
+        dsparkDraft: String? = nil
+    ) {
+        self.init(perfProvider: { perf }, draftModelID: draftModelID, dsparkDraft: dsparkDraft)
     }
 
     /// Provider-based init: `perfProvider` is invoked on each `load` so settings changes apply to
     /// the next load. (The GUI uses this; the convenience `init(perf:)` wraps a constant.)
     public init(
-        perfProvider: @escaping @Sendable () -> EnginePerfOptions, draftModelID: String? = nil
+        perfProvider: @escaping @Sendable () -> EnginePerfOptions, draftModelID: String? = nil,
+        dsparkDraft: String? = nil
     ) {
         self.perfProvider = perfProvider
         self.defaultDraftModelID = draftModelID
+        self.dsparkDraft = dsparkDraft ?? "auto"
         // Tune the MLX runtime once, before any model is loaded (GPU cache limit is a process-wide
         // one-time setting). `configure` is idempotent; uses the initial perf snapshot.
         MLXRuntime.configure(perf: perfProvider())
@@ -121,6 +129,30 @@ public struct MLXModelLoader: ModelLoading {
             capabilities.insert(.speculative)
         }
 
+        // DSpark draft-model speculation: attach the official drafter (auto-resolved for
+        // supported targets, or an explicit repo). Auto mode is best-effort — any failure
+        // (offline, incompatible) logs and serves plain; an explicit repo failure throws.
+        var dsparkRuntime: DSparkRuntimeBox? = nil
+        if draftModelID == nil, dsparkDraft.lowercased() != "off" {
+            let auto = dsparkDraft.lowercased() == "auto"
+            let resolved = auto
+                ? DrafterPairing.dsparkDrafterRepoID(forTarget: descriptor.repoID)
+                : dsparkDraft
+            if let drafterRepo = resolved {
+                do {
+                    dsparkRuntime = try await Self.attachDSpark(
+                        container: container, drafterRepo: drafterRepo,
+                        targetRepoID: descriptor.repoID, revision: descriptor.revision ?? "main",
+                        perf: perf, progress: progress)
+                    capabilities.insert(.speculative)
+                } catch where auto {
+                    progress(LoadProgress(
+                        fraction: nil,
+                        detail: "DSpark drafter unavailable (\(error)) — serving without speculation"))
+                }
+            }
+        }
+
         return MLXInferenceEngine(
             descriptor: descriptor,
             capabilities: capabilities,
@@ -128,8 +160,70 @@ public struct MLXModelLoader: ModelLoading {
             perf: perf,
             isBatchable: isBatchable,
             modelType: modelType,
-            trimUnsound: trimUnsound
+            trimUnsound: trimUnsound,
+            dspark: dsparkRuntime
         )
+    }
+
+    /// Download + load a DSpark drafter and validate it against the loaded target model.
+    /// Runs the weight load inside `container.perform` (the drafter lives with the model).
+    private static func attachDSpark(
+        container: ModelContainer,
+        drafterRepo: String,
+        targetRepoID: String,
+        revision: String,
+        perf: EnginePerfOptions,
+        progress: @escaping @Sendable (LoadProgress) -> Void
+    ) async throws -> DSparkRuntimeBox {
+        progress(LoadProgress(fraction: nil, detail: "downloading DSpark drafter \(drafterRepo)…"))
+        guard let repo = Repo.ID(rawValue: drafterRepo) else {
+            throw DSparkAttachError.badRepoID(drafterRepo)
+        }
+        let dir = try await HubClient().downloadSnapshot(of: repo, revision: "main")
+
+        // The drafter was trained against a specific target architecture: same hidden width,
+        // same layer count (its target_layer_ids index into them), same vocab. Fail loud on
+        // mismatch instead of decoding garbage context.
+        let targetConfig = try await Self.readTargetDims(repoID: targetRepoID, revision: revision)
+
+        progress(LoadProgress(fraction: nil, detail: "loading DSpark drafter…"))
+        let box = try await container.perform { context -> DSparkRuntimeBox in
+            guard context.model is any DSparkTargetModel else {
+                throw DSparkAttachError.targetNotSupported(String(describing: type(of: context.model)))
+            }
+            let drafter = try DSparkDraftLoader.load(directory: dir, quantBits: 4)
+            let c = drafter.config
+            if let t = targetConfig {
+                guard c.hiddenSize == t.hiddenSize, c.vocabularySize == t.vocabSize,
+                    c.numTargetLayers == t.hiddenLayers,
+                    c.targetLayerIds.allSatisfy({ $0 < t.hiddenLayers })
+                else {
+                    throw DSparkAttachError.drafterMismatch(
+                        drafter: drafterRepo, target: targetRepoID)
+                }
+            }
+            return DSparkRuntimeBox(
+                drafter: drafter,
+                blockCap: perf.dsparkBlockCap,
+                confidenceThreshold: perf.dsparkConfidenceThreshold)
+        }
+        progress(LoadProgress(fraction: nil, detail: "DSpark speculative decoding ready"))
+        return box
+    }
+
+    /// Target dims for drafter validation, from the (cached) snapshot's config.json.
+    private static func readTargetDims(
+        repoID: String, revision: String
+    ) async throws -> (hiddenSize: Int, hiddenLayers: Int, vocabSize: Int)? {
+        guard let repo = Repo.ID(rawValue: repoID),
+            let dir = try? await HubClient().downloadSnapshot(of: repo, revision: revision),
+            let data = try? Data(contentsOf: dir.appendingPathComponent("config.json")),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let hidden = obj["hidden_size"] as? Int,
+            let layers = obj["num_hidden_layers"] as? Int,
+            let vocab = obj["vocab_size"] as? Int
+        else { return nil }
+        return (hidden, layers, vocab)
     }
 
     /// Read `model_type` from a model's `config.json` (the snapshot is expected to be cached). Used to
@@ -193,11 +287,32 @@ public struct MLXModelLoader: ModelLoading {
         return BaseConfiguration.Quantization(groupSize: groupSize, bits: bits)
     }
 
-    /// Heuristic: mlx-community publishes MTP *drafters* as `…-MTP-<quant>` checkpoints that hold
-    /// only the MTP head and cannot be loaded as a standalone model.
+    /// Heuristic: standalone *drafter* checkpoints cannot be loaded as a primary model —
+    /// mlx-community's `…-MTP-<quant>` (MTP head only) and deepseek-ai's `dspark_*` (drafter
+    /// network whose config declares a full model_type, so the factory would try — and fail —
+    /// to load it as a backbone).
     static func looksLikeStandaloneDrafter(_ repoID: String) -> Bool {
         let name = (repoID.split(separator: "/").last.map(String.init) ?? repoID).lowercased()
         return name.contains("-mtp-") || name.hasSuffix("-mtp") || name.contains("-mtp")
+            || DrafterPairing.isDSparkDrafter(repoID)
+    }
+}
+
+enum DSparkAttachError: Error, CustomStringConvertible {
+    case badRepoID(String)
+    case targetNotSupported(String)
+    case drafterMismatch(drafter: String, target: String)
+
+    var description: String {
+        switch self {
+        case .badRepoID(let id):
+            return "invalid DSpark drafter repo id: \(id)"
+        case .targetNotSupported(let type):
+            return "loaded model (\(type)) does not expose DSpark hidden-state taps"
+        case .drafterMismatch(let drafter, let target):
+            return "DSpark drafter \(drafter) was not trained for target \(target) "
+                + "(hidden size / layer count / vocab mismatch)"
+        }
     }
 }
 
