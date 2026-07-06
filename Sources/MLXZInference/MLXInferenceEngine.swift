@@ -92,6 +92,15 @@ public struct MLXInferenceEngine: InferenceEngine {
             (useMTPModel || isBatchable || plainInterleaves) ? max(1, perf.maxBatch) : 1
     }
 
+    /// Bench-only entry point: the speculative verify-cost curve (see `VerifyCurveBench`).
+    public func runVerifyCurve(
+        contexts: [Int], maxM: Int, itersPerPoint: Int
+    ) async throws -> [VerifyCurveBench.Point] {
+        try await VerifyCurveBench.run(
+            container: container, perf: perf, repoID: descriptor.repoID,
+            contexts: contexts, maxM: maxM, itersPerPoint: itersPerPoint)
+    }
+
     public func generate(_ request: GenerationRequest) async throws -> AsyncThrowingStream<GenerationEvent, Error> {
         let parameters = Self.mapParameters(
             request.sampling, maxTokens: request.maxTokens, perf: perf, repoID: descriptor.repoID)

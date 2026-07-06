@@ -90,6 +90,12 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Benchmark warm iterations (after 1 discarded warmup). Default 3.")
     var iters: Int = 3
 
+    @Flag(name: .long, help: "Measure the speculative verify-cost curve (target forward over M=1..8 tokens vs a warm KV cache at several context lengths), fit ms ≈ a + b·M per context, and exit. Input to the DSpark go/no-go ceiling projection and draft-cap choice.")
+    var benchVerifyCurve: Bool = false
+
+    @Option(name: .long, help: "Comma-separated context lengths for --bench-verify-curve. Default 512,8192,32768.")
+    var verifyCtx: String = "512,8192,32768"
+
     func run() async throws {
         if downloadTest {
             // Exercise the exact GUI download path (MLXModelDownloader) and print progress ticks so we
@@ -158,6 +164,25 @@ struct MLXZServe: AsyncParsableCommand {
         // aren't paged under pressure. No-op when --wired-mb is 0.
         if let applied = await MLXRuntime.configureWired(perf: perf) {
             logger.info("wired-memory limit applied", metadata: ["bytes": .stringConvertible(applied)])
+        }
+
+        if benchVerifyCurve {
+            guard let engine = await manager.currentEngine() as? MLXInferenceEngine else {
+                benchPrint("verify-curve: engine is not MLXInferenceEngine"); return
+            }
+            let contexts = verifyCtx.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            benchPrint("=== verify-cost curve ===")
+            benchPrint("model=\(model) contexts=\(contexts) M=1..8 iters/point=\(max(iters, 5))")
+            let points = try await engine.runVerifyCurve(
+                contexts: contexts, maxM: 8, itersPerPoint: max(iters, 5))
+            for f in VerifyCurveBench.fit(points) {
+                benchPrint(String(
+                    format: "  ctx=%-6d verify(M) ≈ %.2f + %.2f·M ms  (M=1: %.2fms, M=8: %.2fms)",
+                    f.ctx, f.aMs, f.bMs,
+                    points.first { $0.ctx == f.ctx && $0.m == 1 }?.medianMs ?? 0,
+                    points.first { $0.ctx == f.ctx && $0.m == 8 }?.medianMs ?? 0))
+            }
+            return
         }
 
         if bench {
