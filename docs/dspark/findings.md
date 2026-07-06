@@ -1,5 +1,23 @@
 # DSpark findings ledger (M5 Max, 2026-07)
 
+## M3 — speculative sampling losslessness (2026-07-07)
+
+Three-layer proof that temperature > 0 output preserves the target distribution:
+
+1. **Sampler exactness (chi-square)**: `SpeculativeVerifierTests.testOutputDistributionMatchesTarget`
+   — draft from q, accept w.p. min(1, p/q), residual-resample on reject; the committed
+   token's empirical distribution matches p (4k draws × 3 (p,q) pairs incl. adversarial,
+   vocab 8, all chi² < 18.475 = df7 @ p=0.01). Hand-computed unit tests cover the
+   accept/residual/bonus paths and the identical p/q top-p/top-k truncation.
+2. **Live path**: temperature 0.7 → acc/step 2.22; temperature 1.0 + top_p 0.9 → 2.63
+   (truncated-q path exercised through the OpenAI endpoint; coherent output).
+3. **No quality drift end-to-end**: 12 completions/arm at temp 0.7 (4 prompts × 3),
+   teacher-forced under the target: spec −0.4847 [−0.566, −0.400] vs plain −0.4915
+   [−0.576, −0.409] mean logprob/token (bootstrap 95% CIs overlap almost entirely).
+   Scripts: scripts/dspark/collect_arm.py + score_arms.py.
+
+**Gate: PASSED.**
+
 ## M2 — the greedy "losslessness" standard on MLX/Metal (2026-07-07)
 
 Byte-identity between speculative and plain greedy decode is UNATTAINABLE on this stack —

@@ -111,6 +111,9 @@ struct MLXZServe: AsyncParsableCommand {
     @Option(name: .long, help: "Comma-separated context lengths for --bench-verify-curve. Default 512,8192,32768.")
     var verifyCtx: String = "512,8192,32768"
 
+    @Flag(name: .long, help: "Order-controlled speculative-vs-plain A/B: per suite (chat/code/math), run paired iterations of both arms in ONE process, alternating arm order so thermal drift cancels. Reports median decode tok/s per arm + ratio + variance gate. Add --prompt-tokens N (≥2048) to append a synthetic long-context suite.")
+    var benchCompare: Bool = false
+
     func run() async throws {
         if downloadTest {
             // Exercise the exact GUI download path (MLXModelDownloader) and print progress ticks so we
@@ -210,6 +213,15 @@ struct MLXZServe: AsyncParsableCommand {
             }
             let flipRate = try await runLossless(engine: engine)
             if flipRate > tieFlipBudget { throw ExitCode(1) }
+            return
+        }
+
+        if benchCompare {
+            guard let engine = await manager.currentEngine() else {
+                benchPrint("bench-compare: no engine loaded")
+                throw ExitCode(2)
+            }
+            try await runCompare(engine: engine)
             return
         }
 
@@ -334,7 +346,10 @@ struct MLXZServe: AsyncParsableCommand {
         var text = ""
         var tokens = 0
         var seconds = 0.0
+        var ttft = 0.0
         var combined: String { reasoning + "\u{241F}" + text }
+        var decodeSeconds: Double { max(0.001, seconds - ttft) }
+        var decodeTokPerSec: Double { Double(max(0, tokens - 1)) / decodeSeconds }
     }
 
     private func collectArm(
@@ -348,17 +363,92 @@ struct MLXZServe: AsyncParsableCommand {
             reasoningTokenBudget: 0)
         var out = ArmOutput()
         let t0 = Date()
+        var firstTokenAt: Date?
         let stream = try await engine.generate(request)
         for try await event in stream {
             switch event {
-            case .reasoningDelta(let s): out.reasoning += s
-            case .textDelta(let s): out.text += s
+            case .reasoningDelta(let s):
+                if firstTokenAt == nil { firstTokenAt = Date() }
+                out.reasoning += s
+            case .textDelta(let s):
+                if firstTokenAt == nil { firstTokenAt = Date() }
+                out.text += s
             case .completed(let result): out.tokens = result.usage.completionTokens
             default: break
             }
         }
         out.seconds = Date().timeIntervalSince(t0)
+        out.ttft = (firstTokenAt ?? Date()).timeIntervalSince(t0)
         return out
+    }
+
+    // MARK: - Order-controlled A/B (--bench-compare)
+
+    /// The headline measurement: per suite, run `iters` paired samples of the full prompt
+    /// list through BOTH arms in one process, alternating which arm goes first each
+    /// iteration (A,B / B,A / …) so thermal drift cancels (BASELINE.md discipline). Reports
+    /// median decode tok/s per arm, the ratio, and the run-to-run variance gate.
+    private func runCompare(engine: any InferenceEngine) async throws {
+        let warmIters = max(iters, 5)
+        benchPrint("=== bench-compare (greedy, maxTokens=\(benchMaxTokens), \(warmIters) paired iters, order-alternated) ===")
+        benchPrint("model=\(model) draftBlock=\(draftBlock) confidenceThreshold=\(confidenceThreshold) kvBits=\(kvBits)")
+
+        // Suites: the checked-in prompts plus one synthetic long-context probe.
+        var suites = BenchPrompts.all
+        if promptTokens >= 2048 {
+            let words = max(1, Int(Double(promptTokens) * 0.75))
+            let filler = Array(repeating: "lorem ipsum dolor sit amet", count: (words / 5) + 1)
+                .joined(separator: " ")
+            suites.append((
+                "long\(promptTokens)",
+                ["Context follows.\n\(filler)\n\nSummarize the key idea in two sentences."]))
+        }
+
+        func median(_ xs: [Double]) -> Double {
+            let s = xs.sorted()
+            return s.count % 2 == 1 ? s[s.count / 2] : (s[s.count / 2 - 1] + s[s.count / 2]) / 2
+        }
+        func stddev(_ xs: [Double]) -> Double {
+            guard xs.count > 1 else { return 0 }
+            let m = xs.reduce(0, +) / Double(xs.count)
+            return (xs.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(xs.count - 1)).squareRoot()
+        }
+
+        for (suite, prompts) in suites {
+            // One warmup pass (discarded) so kernel compilation/caches don't bias arm A.
+            _ = try await collectArm(engine: engine, prompt: prompts[0], speculationDisabled: false)
+            _ = try await collectArm(engine: engine, prompt: prompts[0], speculationDisabled: true)
+
+            var specSamples: [Double] = []   // aggregate decode tok/s per iteration
+            var plainSamples: [Double] = []
+            for i in 0 ..< warmIters {
+                let specFirst = i % 2 == 0
+                var perArm: [Bool: (tokens: Int, seconds: Double)] = [:]
+                for disabled in specFirst ? [false, true] : [true, false] {
+                    var tokens = 0
+                    var seconds = 0.0
+                    for prompt in prompts {
+                        let r = try await collectArm(
+                            engine: engine, prompt: prompt, speculationDisabled: disabled)
+                        tokens += max(0, r.tokens - 1)
+                        seconds += r.decodeSeconds
+                    }
+                    perArm[disabled] = (tokens, seconds)
+                }
+                specSamples.append(Double(perArm[false]!.tokens) / perArm[false]!.seconds)
+                plainSamples.append(Double(perArm[true]!.tokens) / perArm[true]!.seconds)
+            }
+            let specMed = median(specSamples)
+            let plainMed = median(plainSamples)
+            let specVar = specMed > 0 ? stddev(specSamples) / specMed * 100 : 0
+            let plainVar = plainMed > 0 ? stddev(plainSamples) / plainMed * 100 : 0
+            benchPrint(String(
+                format: "  %@: spec %.1f tok/s (±%.1f%%)  plain %.1f tok/s (±%.1f%%)  ratio %.3fx",
+                suite, specMed, specVar, plainMed, plainVar, specMed / plainMed))
+            if max(specVar, plainVar) >= 3 {
+                benchPrint("    ⚠️ variance ≥3% — rerun on a quiet machine before trusting this row")
+            }
+        }
     }
 
     /// Greedy divergence gate: speculative ON vs plain decode, same process, same weights.
