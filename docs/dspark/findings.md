@@ -200,3 +200,16 @@ plain, inside the tie band by design. Three controller designs (EWMA, symmetric-
 hysteresis median, asymmetric median) all converge there: it is a hardware property,
 not a tuning gap. mlxz's real workload is bursty/interactive, where drafting wins.
 Lossless gate with the controller: 2.50%/token, within budget.
+
+## Follow-ups #3 + #4 (2026-07-07, fork 9f51f56/6bc9afc, mlxz b0f2466)
+
+**#3 Agentic TTFT parity**: sessions snapshot their WHOLE final state (exact cache token
+ids tracked), and SnapshotLRU.bestCommonPrefix + trim-on-restore handles the fact that
+chat templates re-render prior turns (whole-generation snapshots never exact-prefix the
+next prompt). Turn-2 TTFT 0.46s → 0.09s (plain path: 0.11s); turn total 1.89s → 1.37s.
+
+**#4 Prompt-lookup drafting**: 4/5-gram index proposes free 6-token drafts on copy runs,
+fired before arm selection (no drafter forward; active in both controller modes).
+Copy-heavy request: ~150 tok/s vs ~100 plain (~1.5×), 20 lookup rounds/165 tokens,
+accHist [0.93,0.93,0.64]. Lossless gate with everything active: 2.50%/token, PASSED.
+Kill switches: MLXZ_DSPARK_LOOKUP=0, MLXZ_DSPARK_ADAPTIVE=0, MLXZ_QKV_ROWSPLIT=0.
