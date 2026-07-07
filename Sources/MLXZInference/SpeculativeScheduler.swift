@@ -8,14 +8,17 @@ import MLXZCore
 /// `ModelContainer.perform` (same discipline as `PromptCacheBox`).
 public final class DSparkRuntimeBox: @unchecked Sendable {
     let drafter: DSparkDrafter
+    /// The drafter checkpoint's repo id (for status display).
+    let drafterRepoID: String
     let blockCap: Int
     let confidenceThreshold: Float
     /// One adaptive draft on/off controller shared by all of this model's sessions —
     /// bootstrap/probe state persists across requests (mutated only inside the container).
     let adaptive = AdaptiveDraftController()
 
-    init(drafter: DSparkDrafter, blockCap: Int, confidenceThreshold: Float) {
+    init(drafter: DSparkDrafter, drafterRepoID: String, blockCap: Int, confidenceThreshold: Float) {
         self.drafter = drafter
+        self.drafterRepoID = drafterRepoID
         self.blockCap = blockCap
         self.confidenceThreshold = confidenceThreshold
     }

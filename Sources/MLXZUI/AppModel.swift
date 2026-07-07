@@ -51,6 +51,9 @@ public final class AppModel {
     // Observable state.
     public private(set) var modelState: ModelManager.State = .empty
     public private(set) var serverRunning: Bool = false
+    /// The loaded engine's active speculative-decoding mode ("DSpark drafter: …",
+    /// "native MTP"), nil when plain. Drives the ⚡ badge in the model library.
+    public private(set) var speculationStatus: String? = nil
 
     // Live server metrics (an observable holder so the server's sink can update it without
     // capturing `self` during init).
@@ -187,13 +190,23 @@ public final class AppModel {
             : nil
         if let drafterID {
             logStore.append("Loading \(descriptor.repoID) + MTP drafter \(drafterID)…")
+        } else if let dsparkDrafter = DrafterPairing.dsparkDrafterRepoID(forTarget: descriptor.repoID) {
+            logStore.append(
+                "Loading \(descriptor.repoID) — DSpark drafter \(dsparkDrafter) auto-attaches (downloads on first use)…")
         } else {
             logStore.append("Loading \(descriptor.repoID)…")
         }
         do {
             try await manager.load(descriptor, draftModelID: drafterID)
-            logStore.append("Loaded \(descriptor.repoID)\(drafterID != nil ? " (MTP attached)" : "")")
+            let speculation = await manager.currentEngine()?.speculationStatus
+            speculationStatus = speculation
+            if let speculation {
+                logStore.append("Loaded \(descriptor.repoID) — speculative decoding ON (\(speculation))")
+            } else {
+                logStore.append("Loaded \(descriptor.repoID)")
+            }
         } catch {
+            speculationStatus = nil
             logStore.append("Load failed: \(error)")
         }
     }
@@ -207,6 +220,7 @@ public final class AppModel {
 
     public func unload() async {
         await manager.unload()
+        speculationStatus = nil
         logStore.append("Unloaded model")
     }
 

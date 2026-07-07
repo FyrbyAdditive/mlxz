@@ -100,6 +100,17 @@ public struct MLXInferenceEngine: InferenceEngine {
             ? max(1, perf.maxBatch) : 1
     }
 
+    /// The active speculative mode, for UI/log display.
+    public var speculationStatus: String? {
+        if let dspark {
+            return "DSpark drafter: \(dspark.drafterRepoID)"
+        }
+        if perf.useMTP && capabilities.contains(.speculative) {
+            return "native MTP"
+        }
+        return nil
+    }
+
     /// Bench-only entry point: the speculative verify-cost curve (see `VerifyCurveBench`).
     public func runVerifyCurve(
         contexts: [Int], maxM: Int, itersPerPoint: Int

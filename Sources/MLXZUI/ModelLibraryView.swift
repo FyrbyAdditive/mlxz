@@ -184,6 +184,16 @@ struct ModelLibraryView: View {
                     .help("MTP drafter — auto-attaches when its base model is loaded.")
             }
         } else if isLoaded(repoID) {
+            if let speculation = model.speculationStatus {
+                Label(
+                    speculation.hasPrefix("DSpark") ? "DSpark" : "MTP",
+                    systemImage: "bolt.fill"
+                )
+                .font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Color.green.opacity(0.18), in: Capsule())
+                .foregroundStyle(.green)
+                .help("Speculative decoding active — \(speculation)")
+            }
             Button("Unload", role: .destructive) { Task { await model.unload() } }
         } else if isLoading(repoID) {
             HStack(spacing: 4) {

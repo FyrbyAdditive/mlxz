@@ -17,6 +17,11 @@ public protocol InferenceEngine: Sendable {
     /// models that use the continuous-batching engine return `maxBatch` so requests decode together.
     var maxConcurrency: Int { get }
 
+    /// Human-readable description of the active speculative-decoding mode, if any —
+    /// e.g. "DSpark drafter: deepseek-ai/dspark_qwen3_8b_block7" or "native MTP".
+    /// nil = plain decoding. Surfaced in the UI/logs so users can see speculation is on.
+    var speculationStatus: String? { get }
+
     /// Produce a stream of internal events for one request.
     ///
     /// Terminating iteration (e.g. an HTTP client disconnect) must cancel the underlying
@@ -27,4 +32,7 @@ public protocol InferenceEngine: Sendable {
 extension InferenceEngine {
     /// Default: serialize. Engines that support continuous batching override this.
     public var maxConcurrency: Int { 1 }
+
+    /// Default: plain decoding.
+    public var speculationStatus: String? { nil }
 }

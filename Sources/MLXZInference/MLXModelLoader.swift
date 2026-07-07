@@ -210,6 +210,7 @@ public struct MLXModelLoader: ModelLoading {
             }
             return DSparkRuntimeBox(
                 drafter: drafter,
+                drafterRepoID: drafterRepo,
                 blockCap: perf.dsparkBlockCap,
                 confidenceThreshold: perf.dsparkConfidenceThreshold)
         }
