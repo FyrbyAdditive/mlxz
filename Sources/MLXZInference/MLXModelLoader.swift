@@ -133,23 +133,16 @@ public struct MLXModelLoader: ModelLoading {
         // supported targets, or an explicit repo). Auto mode is best-effort — any failure
         // (offline, incompatible) logs and serves plain; an explicit repo failure throws.
         //
-        // Measured envelope (docs/dspark/findings.md): with a QUANTIZED KV cache the M>1
-        // verify forward falls off the fast attention kernel (2.5–7× per-step penalty,
-        // growing with context — 0.6× net at 3k ctx), so AUTO only engages on full-precision
-        // KV, where DSpark wins (math/code ≥1.08× sustained, up to 1.3× bursty). An
-        // explicit --dspark-draft <repo> still forces attach on any config.
+        // Measured envelope (docs/dspark/findings.md): with the small-M row split in the
+        // fork's quantized attention, multi-token verify costs the same on quantized and
+        // fp16 KV, so auto engages on every config. Interactive (bursty) use wins
+        // 1.13–1.20× on code/math; sustained-load chat can dip ~10% until the adaptive
+        // draft on/off controller lands (follow-up #2 in the findings ledger).
         var dsparkRuntime: DSparkRuntimeBox? = nil
         if draftModelID == nil, dsparkDraft.lowercased() != "off" {
             let auto = dsparkDraft.lowercased() == "auto"
-            if auto, perf.kvBits != nil {
-                progress(LoadProgress(
-                    fraction: nil,
-                    detail: "DSpark auto: skipped (quantized KV cache penalizes multi-token "
-                        + "verify; use --kv-bits 0 or an explicit --dspark-draft to enable)"))
-            }
             let resolved = auto
-                ? (perf.kvBits == nil
-                    ? DrafterPairing.dsparkDrafterRepoID(forTarget: descriptor.repoID) : nil)
+                ? DrafterPairing.dsparkDrafterRepoID(forTarget: descriptor.repoID)
                 : dsparkDraft
             if let drafterRepo = resolved {
                 do {

@@ -1,5 +1,31 @@
 # DSpark findings ledger (M5 Max, 2026-07)
 
+## Follow-up #1 — small-M row split for quantized attention (2026-07-07, fork 9bada99)
+
+The M>1 quantized-attention cliff is FIXED: M≤8 causal rows now run as independent
+single-row attentions (SDPA rows are independent; causality via per-row key-prefix
+slices), each on the same fast qmv path plain decode uses. Exact math (parity-tested vs
+the unsplit path and an fp16 dequantized reference; kill switch MLXZ_QKV_ROWSPLIT=0).
+
+Verify-cost curve, Qwen3-8B-4bit, kvBits=4 (was → now):
+- ctx 512:  M=2 17.1 → 12.9ms · M=4 21.2 → 17.9ms
+- ctx 8192: M=2 49.7 → 16.4ms (3.0×) · M=4 55.3 → 24.4ms (2.3×)
+- ctx 32768: M=2 137.4 → 25.6ms (5.4×) · M=4 169.9 → 41.5ms (4.1×)
+Quantized-KV multi-token verify now costs the same as fp16 KV (keep the 4× memory win).
+
+Effects on the DEFAULT config (kvBits=4, Qwen3-8B, drafter attached):
+- Bursty: chat 0.96× / code **1.13×** / math **1.20×** (was 1.02–1.06×).
+- Sustained (order-controlled): chat 0.876× / code 0.943× / math 1.012× — the remaining
+  gap is the ALU-bound drafter under sustained-load clock drop + low chat acceptance
+  (adaptive draft on/off controller = follow-up #2).
+- Agentic 3.2k ctx: 0.6× → ~0.72× of plain (verify 30 → 21ms/round; drafter's own ctx
+  attention now dominates at 9.1ms/round).
+- Divergence rate 2.50%/token (within the 3.00% ceiling budget). NOTE: a same-day
+  "0.00% divergence" measurement was invalid — the kvBits auto-gate had silently
+  disabled DSpark, so both arms were plain decode. Always confirm [SPEC] lines exist.
+- MTP control after the split (it shares the verify path): 44.81 tok/s — no regression.
+- Auto-attach re-enabled for all configs (the kvBits gate is obsolete).
+
 ## M4/M5 — performance envelope + regression gates (2026-07-07)
 
 ### Headline (order-controlled `--bench-compare`, cap 3, 5 paired iters, Release, clean process table)
