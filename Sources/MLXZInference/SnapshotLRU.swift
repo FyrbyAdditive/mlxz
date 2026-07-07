@@ -97,4 +97,28 @@ final class SnapshotLRU: @unchecked Sendable {
     /// The token sequence of the MRU entry, used to pick the next snapshot boundary (the stable
     /// region a future request is most likely to share). Empty when the cache is empty.
     var mostRecentTokens: [Int32] { entries.first?.tokens ?? [] }
+
+    /// The entry sharing the longest COMMON PREFIX with `newTokens` (the snapshot need not be an
+    /// exact prefix — trim-sound caches can be copied and TRIMMED back to the shared point). For
+    /// whole-generation snapshots this is essential: chat templates re-render prior turns (e.g.
+    /// stripping reasoning), so the snapshot's tail never matches but the shared region is nearly
+    /// the whole previous conversation. Returns the entry and the usable common length
+    /// (< newTokens.count, ≥ minReuse). Touches the entry (MRU).
+    func bestCommonPrefix(for newTokens: [Int32], minReuse: Int = 16) -> (entry: Entry, common: Int)? {
+        guard capacity > 0 else { return nil }
+        var bestIndex: Int? = nil
+        var bestLen = 0
+        for (i, e) in entries.enumerated() {
+            let n = min(
+                MTPCacheReuse.commonPrefixLength(e.tokens, newTokens), newTokens.count - 1)
+            if n > bestLen {
+                bestLen = n
+                bestIndex = i
+            }
+        }
+        guard let idx = bestIndex, bestLen >= minReuse else { return nil }
+        let entry = entries.remove(at: idx)
+        entries.insert(entry, at: 0)
+        return (entry, bestLen)
+    }
 }

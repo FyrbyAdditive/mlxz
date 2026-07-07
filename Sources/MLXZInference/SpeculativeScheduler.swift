@@ -189,6 +189,38 @@ actor SpeculativeScheduler {
 
         case .dspark(let runtime):
             guard let model = context.model as? any DSparkTargetModel else { return nil }
+            // Prefer the longest COMMON-PREFIX snapshot (whole-generation snapshots never
+            // exact-prefix the next prompt — templates re-render prior turns — but both
+            // cache kinds are trim-sound, so copy + trim back to the shared point).
+            var partial: (model: [KVCache], ctx: [KVCacheSimple], common: Int)? = nil
+            if let (entry, common) = lru?.bestCommonPrefix(for: newTokens), common > restoreCount {
+                let m = entry.modelCache.map { $0.copy() }
+                let c = entry.mtpCache.compactMap { $0.copy() as? KVCacheSimple }
+                let overshoot = entry.tokens.count - common
+                if overshoot > 0 {
+                    trimPromptCache(m, numTokens: overshoot)
+                    for cache in c { _ = cache.trim(overshoot) }
+                }
+                partial = (m, c, common)
+            }
+            if let partial {
+                let sound = partial.ctx.allSatisfy { $0.offset == partial.common }
+                    && (partial.model.first?.offset ?? -1) == partial.common
+                if sound {
+                    return DSparkSession(
+                        model: model, drafter: runtime.drafter, context: context,
+                        parameters: p.parameters, promptTokens: promptTokens,
+                        modelCache: partial.model, ctxCaches: partial.ctx,
+                        skipPrefill: partial.common, snapshotBlock: snapshotBlock,
+                        referenceTokens: lru?.mostRecentTokens ?? [],
+                        blockCap: runtime.blockCap,
+                        confidenceThreshold: runtime.confidenceThreshold,
+                        adaptiveController: runtime.adaptive,
+                        reasoningBudget: p.reasoningBudget,
+                        stopTokenIds: stopTokenIds, continuation: p.continuation,
+                        result: MTPCacheResult())
+                }
+            }
             // The snapshot's aux slot carries the drafter's context caches (KVCacheSimple).
             // A snapshot whose aux doesn't restore cleanly would desync the drafter from
             // the target — fall back to a fresh prefill instead of decoding wrong context.
