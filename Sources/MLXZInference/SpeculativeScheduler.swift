@@ -192,10 +192,10 @@ actor SpeculativeScheduler {
             // Prefer the longest COMMON-PREFIX snapshot (whole-generation snapshots never
             // exact-prefix the next prompt — templates re-render prior turns — but both
             // cache kinds are trim-sound, so copy + trim back to the shared point).
-            var partial: (model: [KVCache], ctx: [KVCacheSimple], common: Int)? = nil
+            var partial: (model: [KVCache], ctx: [KVCache], common: Int)? = nil
             if let (entry, common) = lru?.bestCommonPrefix(for: newTokens), common > restoreCount {
                 let m = entry.modelCache.map { $0.copy() }
-                let c = entry.mtpCache.compactMap { $0.copy() as? KVCacheSimple }
+                let c = entry.mtpCache.map { $0.copy() }
                 let overshoot = entry.tokens.count - common
                 if overshoot > 0 {
                     trimPromptCache(m, numTokens: overshoot)
@@ -225,7 +225,7 @@ actor SpeculativeScheduler {
             // A snapshot whose aux doesn't restore cleanly would desync the drafter from
             // the target — fall back to a fresh prefill instead of decoding wrong context.
             var restoreModel = match.map { $0.modelCache.map { $0.copy() } }
-            var restoreCtx = match.map { $0.mtpCache.compactMap { $0.copy() as? KVCacheSimple } }
+            var restoreCtx = match.map { $0.mtpCache.map { $0.copy() } }
             var skip = restoreCount
             let layerCount = runtime.drafter.makeContextCaches().count
             if let ctx = restoreCtx,
@@ -239,7 +239,9 @@ actor SpeculativeScheduler {
                 model: model, drafter: runtime.drafter, context: context,
                 parameters: p.parameters, promptTokens: promptTokens,
                 modelCache: restoreModel ?? context.model.newCache(parameters: p.parameters),
-                ctxCaches: restoreCtx ?? runtime.drafter.makeContextCaches(),
+                ctxCaches: restoreCtx
+                    ?? runtime.drafter.makeContextCaches(
+                        kvBits: p.parameters.kvBits, groupSize: p.parameters.kvGroupSize),
                 skipPrefill: skip, snapshotBlock: snapshotBlock,
                 referenceTokens: lru?.mostRecentTokens ?? [],
                 blockCap: runtime.blockCap,
