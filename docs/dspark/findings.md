@@ -213,3 +213,27 @@ fired before arm selection (no drafter forward; active in both controller modes)
 Copy-heavy request: ~150 tok/s vs ~100 plain (~1.5×), 20 lookup rounds/165 tokens,
 accHist [0.93,0.93,0.64]. Lossless gate with everything active: 2.50%/token, PASSED.
 Kill switches: MLXZ_DSPARK_LOOKUP=0, MLXZ_DSPARK_ADAPTIVE=0, MLXZ_QKV_ROWSPLIT=0.
+
+## #5 + #6 — quantized drafter ctx caches; Gemma4 target (2026-07-07/08)
+
+**#5 (fork a42b9f8)**: drafter ctx caches quantize with the engine's kvBits (fp16 ctx =
+~20KB/token → 650MB at 32k); drafter block attention gains a quantized path and the
+row split now covers unmasked small-M. Drafter cost at 3.2k ctx: 9.1 → 5.5–6.8ms/round.
+
+**#6 (fork 405b001, 1f405ff, d7664c7; mlxz ed604f1)**: Gemma4 complete.
+- gemma4 drafter family (k_eq_v, ProportionalRoPE, sandwich norms + layer_scalar, gelu,
+  softcap). Parity: embed exact / fused 0.17% / layer-0 0.24%; later positions flip on
+  softcap-compressed near-ties (family-aware test tolerances).
+- The 12B targets are gemma4_unified → Gemma4UnifiedText serves the text tower only
+  (mlx-community/gemma-4-12B-it-8bit; the 4-bit repo is also unified). Registered in the
+  VLM factory with a minimal text processor.
+- Cache policy: full-length caches + FORCED boolean window masks at every step size
+  (rotating trims are unsound under verify rollback). Sliding layers use
+  PinnedPrecisionKVCache — quantizing only the spec arm's caches (plain's rotating can't
+  quantize) measured 3.91%/token divergence vs a 0.17% pure-Python ceiling
+  (scripts/dspark/gemma_shape_probe.py); with parity pinned: **0.80%/token, PASSED**.
+- Results (Gemma4-12B-8bit, informal): **chat 1.01× / code 1.21× / math 1.14×** — a net
+  win on every suite (slow 37 tok/s baseline = headroom). Window-crossing (1600 tokens
+  past the 1024 window, scripts/dspark/window_cross.py): both arms complete + coherent.
+- Known costs: sliding-layer KV grows unbounded (fp16) in DSpark sessions; text-only
+  serving for unified 12B checkpoints (no image/audio input).
