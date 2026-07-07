@@ -184,3 +184,19 @@ runs), fixing the quantized-KV small-M verify path, fused single-sync greedy rou
 Long-context DSpark with kvBits=4 is currently unattractive until the M>1 cliff is
 addressed — the session should bound draft length (or disable drafting) at large offsets
 until then.
+
+## Follow-up #2 — adaptive draft on/off controller (2026-07-07, fork f7cfb21)
+
+Sessions measure ms/committed-token for both arms (spec rounds vs pipelined plain-step
+batches — lazily chained, one sync per batch, so the plain estimate matches the true
+plain path) and run the faster one. Median windows (robust to per-request warmup
+outliers), per-sample decisions, asymmetric margins (suspend only >8% loss; ties draft),
+probe backoff, ONE controller shared per model. Kill switch MLXZ_DSPARK_ADAPTIVE=0.
+
+Measured on the 8B default config: pathological losses clamp (sustained chat 0.876 →
+0.94); bursty wins hold (math 1.08–1.20×, code 1.02–1.13×); sustained-SATURATED
+converges to ~0.94–0.96 — hot ALU-bound spec rounds are genuinely ~5% slower than
+plain, inside the tie band by design. Three controller designs (EWMA, symmetric-
+hysteresis median, asymmetric median) all converge there: it is a hardware property,
+not a tuning gap. mlxz's real workload is bursty/interactive, where drafting wins.
+Lossless gate with the controller: 2.50%/token, within budget.

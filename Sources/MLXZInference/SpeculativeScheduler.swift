@@ -10,6 +10,9 @@ public final class DSparkRuntimeBox: @unchecked Sendable {
     let drafter: DSparkDrafter
     let blockCap: Int
     let confidenceThreshold: Float
+    /// One adaptive draft on/off controller shared by all of this model's sessions —
+    /// bootstrap/probe state persists across requests (mutated only inside the container).
+    let adaptive = AdaptiveDraftController()
 
     init(drafter: DSparkDrafter, blockCap: Int, confidenceThreshold: Float) {
         self.drafter = drafter
@@ -209,6 +212,7 @@ actor SpeculativeScheduler {
                 referenceTokens: lru?.mostRecentTokens ?? [],
                 blockCap: runtime.blockCap,
                 confidenceThreshold: runtime.confidenceThreshold,
+                adaptiveController: runtime.adaptive,
                 reasoningBudget: p.reasoningBudget,
                 stopTokenIds: stopTokenIds, continuation: p.continuation,
                 result: MTPCacheResult())
