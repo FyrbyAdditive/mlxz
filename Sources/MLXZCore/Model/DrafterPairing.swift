@@ -48,8 +48,7 @@ public enum DrafterPairing {
 
     /// Known official DSpark drafters, longest target-id first (so `qwen3-14b` wins before
     /// `qwen3-4b` could be probed). Matching is quantization-agnostic — the drafter pairs
-    /// with the MODEL, not its quant (mirrors mlx-dspark's registry). Gemma4 lands with the
-    /// Gemma4 target milestone.
+    /// with the MODEL, not its quant (mirrors mlx-dspark's registry). 
     private static let dsparkRegistry: [(id: String, drafter: String)] = [
         ("gemma-4-12b", "deepseek-ai/dspark_gemma4_12b_block7"),
         ("qwen3-14b", "deepseek-ai/dspark_qwen3_14b_block7"),

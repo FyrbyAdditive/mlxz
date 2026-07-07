@@ -64,14 +64,14 @@ var targets: [Target] = [
 
 if includeMLX {
     dependencies += [
-        // Our fork of mlx-swift-lm with native MTP + DSpark speculative decoding.
-        // DSPARK DEV MODE: path dependency while the dspark branches evolve in lockstep.
-        // Before merging to main, push the fork branch and restore the revision pin:
-        //   .package(
-        //       name: "mlx-swift-lm",
-        //       url: "https://github.com/FyrbyAdditive/mlx-swift-lm-mtp.git",
-        //       revision: "<dspark-branch-tip>"),
-        .package(name: "mlx-swift-lm", path: "../mlx-swift-lm-mtp"),
+        // Our fork of mlx-swift-lm with native MTP + DSpark speculative decoding. Pinned to
+        // an exact revision (the dspark branch tip) so external checkouts build the same
+        // code. For local fork development, swap this for:
+        //   .package(name: "mlx-swift-lm", path: "../mlx-swift-lm-mtp"),
+        .package(
+            name: "mlx-swift-lm",
+            url: "https://github.com/FyrbyAdditive/mlx-swift-lm-mtp.git",
+            revision: "d7664c768ade6fd5783f4d007bb488c08433b395"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
     ]
