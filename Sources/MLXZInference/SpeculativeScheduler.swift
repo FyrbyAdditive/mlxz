@@ -238,7 +238,7 @@ actor SpeculativeScheduler {
             return DSparkSession(
                 model: model, drafter: runtime.drafter, context: context,
                 parameters: p.parameters, promptTokens: promptTokens,
-                modelCache: restoreModel ?? context.model.newCache(parameters: p.parameters),
+                modelCache: restoreModel ?? model.dsparkCache(parameters: p.parameters),
                 ctxCaches: restoreCtx
                     ?? runtime.drafter.makeContextCaches(
                         kvBits: p.parameters.kvBits, groupSize: p.parameters.kvGroupSize),

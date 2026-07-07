@@ -46,6 +46,13 @@ def main() -> None:
             drafter.update_context(ctx2, ctx_offset=t1, ctx_caches=caches)
         block_ids = [pending] + [cfg.mask_token_id] * (k - 1)
         noise = drafter.embed(mx.array([block_ids]))
+        if round_idx == 1:
+            fused = drafter.fuse_target(ctx1)
+            layer0 = drafter.layers[0](noise, offset, caches[0])
+            mx.eval(fused, layer0, noise)
+            tensors["r1_fused"] = fused.astype(mx.float32)
+            tensors["r1_layer0"] = layer0[0].astype(mx.float32)
+            tensors["r1_noise"] = noise[0].astype(mx.float32)
         block_hidden = drafter.backbone(noise, offset, caches)
         base_logits = drafter.compute_logits(block_hidden)[0]  # [k, V]
         draft = drafter.sample_block(base_logits, first_prev_token=pending)

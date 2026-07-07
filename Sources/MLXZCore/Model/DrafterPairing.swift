@@ -51,6 +51,7 @@ public enum DrafterPairing {
     /// with the MODEL, not its quant (mirrors mlx-dspark's registry). Gemma4 lands with the
     /// Gemma4 target milestone.
     private static let dsparkRegistry: [(id: String, drafter: String)] = [
+        ("gemma-4-12b", "deepseek-ai/dspark_gemma4_12b_block7"),
         ("qwen3-14b", "deepseek-ai/dspark_qwen3_14b_block7"),
         ("qwen3-8b", "deepseek-ai/dspark_qwen3_8b_block7"),
         ("qwen3-4b", "deepseek-ai/dspark_qwen3_4b_block7"),
