@@ -23,6 +23,24 @@ struct MLXZApp: App {
                 .frame(minWidth: 720, minHeight: 480)
         }
         .windowResizability(.contentMinSize)
+        .commands {
+            // Explicit About panel so the company copyright always shows, independent of
+            // the generated Info.plist (which also carries NSHumanReadableCopyright).
+            CommandGroup(replacing: .appInfo) {
+                Button("About mlxz") {
+                    NSApplication.shared.orderFrontStandardAboutPanel(options: [
+                        .credits: NSAttributedString(
+                            string: "Run open AI models privately on your Mac.\n"
+                                + "Made by Fyrby Additive Manufacturing & Engineering.",
+                            attributes: [
+                                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+                            ]),
+                        NSApplication.AboutPanelOptionKey(rawValue: "Copyright"):
+                            "Copyright © 2026 Tim Ellis, Fyrby Additive Manufacturing & Engineering.\nLicensed under AGPL-3.0.",
+                    ])
+                }
+            }
+        }
 
         // Menu-bar presence so the server can keep running while windows are closed.
         MenuBarExtra("mlxz", systemImage: "brain") {
