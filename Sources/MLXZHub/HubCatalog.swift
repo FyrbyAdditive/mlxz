@@ -128,6 +128,24 @@ public struct HubCatalog: Sendable {
         return Self.sorted(try Self.decode(data), by: sort)
     }
 
+    /// The repo's total storage in bytes (`usedStorage`) — the authoritative download size,
+    /// available for EVERY repo format (safetensors, GGUF, ASR, …), unlike the list
+    /// endpoint's `safetensors` params. Only exposed on the per-model endpoint, so it's a
+    /// separate call used to fill in sizes the search response couldn't provide. Returns nil
+    /// on any error (offline / not found) — the caller just leaves the size blank.
+    public func storageBytes(for repoID: String) async -> Int? {
+        // repoID contains a "/", which must stay a path separator (not %2F), so build the
+        // path directly rather than via appendingPathComponent.
+        guard let url = URL(string: endpoint.absoluteString + "/api/models/" + repoID
+                            + "?expand%5B%5D=usedStorage") else { return nil }
+        guard let (data, response) = try? await session.data(from: url),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let used = obj["usedStorage"] as? Int, used > 0
+        else { return nil }
+        return used
+    }
+
     /// Apply a client-side re-sort for the size cases (a no-op for server-side sorts, which
     /// arrive already ordered). Entries with unknown size sort last so they don't jump the
     /// list. Exposed for testing.

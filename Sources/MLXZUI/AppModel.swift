@@ -94,6 +94,10 @@ public final class AppModel {
     public private(set) var searchError: String? = nil
 
     private var searchTask: Task<Void, Never>?
+    /// Cache of per-repo storage sizes fetched to fill in results the search endpoint
+    /// couldn't size (repos without safetensors metadata). Keyed by repo id.
+    private var sizeCache: [String: Int64] = [:]
+    private var enrichingSizes: Set<String> = []
 
     /// When true (default), the model is auto-unloaded on critical memory pressure.
     public var autoUnloadOnMemoryPressure: Bool = true
@@ -203,14 +207,41 @@ public final class AppModel {
         searchError = nil
         defer { isSearching = false }
         do {
-            let entries = try await catalog.search(query: query, author: author, sort: sort)
+            var entries = try await catalog.search(query: query, author: author, sort: sort)
             guard !Task.isCancelled else { return }
+            // Apply any already-cached sizes so re-searches show them instantly.
+            for i in entries.indices where entries[i].sizeBytes == nil {
+                if let cached = sizeCache[entries[i].id] { entries[i].sizeBytes = Int(cached) }
+            }
             discoverResults = entries
+            enrichMissingSizes()
         } catch is CancellationError {
             // superseded by a newer query — leave state alone
         } catch {
             discoverResults = []
             searchError = "Couldn’t reach HuggingFace. Check your connection and try again."
+        }
+    }
+
+    /// Fill in sizes the search endpoint couldn't provide (repos without safetensors
+    /// metadata) by fetching each one's `usedStorage` — the authoritative repo size,
+    /// available for every format. One lightweight call per gap row, cached so it's fetched
+    /// once; results stream into `discoverResults` as they arrive.
+    private func enrichMissingSizes() {
+        let gaps = discoverResults.filter { $0.sizeBytes == nil }.map(\.id)
+        for id in gaps where !enrichingSizes.contains(id) {
+            enrichingSizes.insert(id)
+            Task { [weak self] in
+                guard let self else { return }
+                let bytes = await self.catalog.storageBytes(for: id)
+                self.enrichingSizes.remove(id)
+                guard let bytes else { return }
+                self.sizeCache[id] = Int64(bytes)
+                if let idx = self.discoverResults.firstIndex(where: { $0.id == id }),
+                   self.discoverResults[idx].sizeBytes == nil {
+                    self.discoverResults[idx].sizeBytes = bytes
+                }
+            }
         }
     }
 
