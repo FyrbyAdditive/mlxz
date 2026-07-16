@@ -230,7 +230,6 @@ struct MLXZServe: AsyncParsableCommand {
             return
         }
 
-        let localStore = LocalModelStore()
         let embeddingManager = EmbeddingManager(loader: MLXEmbeddingLoader())
         let server = InferenceServer(
             manager: manager,
@@ -238,7 +237,6 @@ struct MLXZServe: AsyncParsableCommand {
             maxWaiting: maxQueue,
             logger: logger,
             logSink: { line in logger.info("\(line)") },
-            extraModelIDs: { localStore.installedModels().map(\.descriptor.repoID) },
             embeddingManager: embeddingManager,
             metricsSink: { usage in
                 if let tps = usage.tokensPerSecond {

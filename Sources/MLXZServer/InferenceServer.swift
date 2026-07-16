@@ -25,8 +25,6 @@ public actor InferenceServer {
     private let logger: Logger
     /// Optional sink for human-readable log lines surfaced in the UI.
     private let logSink: (@Sendable (String) -> Void)?
-    /// Optional source of extra servable model ids for `/v1/models`.
-    private let extraModelIDs: (@Sendable () -> [String])?
     /// Optional embedding manager; enables `/v1/embeddings` when set.
     private let embeddingManager: EmbeddingManager?
     /// Optional per-request token-usage sink for UI metrics.
@@ -41,7 +39,6 @@ public actor InferenceServer {
         maxWaiting: Int = 0,
         logger: Logger = Logger(label: "mlxz.server"),
         logSink: (@Sendable (String) -> Void)? = nil,
-        extraModelIDs: (@Sendable () -> [String])? = nil,
         embeddingManager: EmbeddingManager? = nil,
         metricsSink: (@Sendable (TokenUsage) -> Void)? = nil
     ) {
@@ -49,7 +46,6 @@ public actor InferenceServer {
         self.gate = GenerationGate(maxConcurrent: maxConcurrent, maxWaiting: maxWaiting)
         self.logger = logger
         self.logSink = logSink
-        self.extraModelIDs = extraModelIDs
         self.embeddingManager = embeddingManager
         self.metricsSink = metricsSink
     }
@@ -62,7 +58,6 @@ public actor InferenceServer {
             gate: gate,
             apiKey: config.apiKey,
             logSink: logSink,
-            extraModelIDs: extraModelIDs,
             embeddingManager: embeddingManager,
             metricsSink: metricsSink
         ).build()

@@ -12,9 +12,6 @@ struct RouterBuilder {
     let gate: GenerationGate
     let apiKey: String?
     let logSink: (@Sendable (String) -> Void)?
-    /// Optional source of additional servable model ids for `/v1/models` (e.g. installed models).
-    /// The currently-loaded model is always included.
-    var extraModelIDs: (@Sendable () -> [String])?
     /// Optional embedding manager; when set, `/v1/embeddings` is served.
     var embeddingManager: EmbeddingManager?
     /// Optional sink fired once per completed generation with its token usage (for UI metrics).
@@ -43,16 +40,12 @@ struct RouterBuilder {
             )
         }
 
-        // GET /v1/models — lists the loaded model plus any extra servable ids.
+        // GET /v1/models — lists the currently-loaded models. Routing is strict (a request's
+        // `model` must match a loaded id), so only loaded models are servable and listed.
         let manager = self.manager
-        let extraModelIDs = self.extraModelIDs
         router.get("/v1/models") { _, _ -> Response in
-            var ids: [String] = await manager.loadedModelIDs()
-            ids.append(contentsOf: extraModelIDs?() ?? [])
-            // De-dup preserving order.
-            var seen = Set<String>()
-            let unique = ids.filter { seen.insert($0).inserted }
-            let data = (try? Self.modelsListJSON(unique)) ?? Data("{\"object\":\"list\",\"data\":[]}".utf8)
+            let ids = await manager.loadedModelIDs()
+            let data = (try? Self.modelsListJSON(ids)) ?? Data("{\"object\":\"list\",\"data\":[]}".utf8)
             return Response(
                 status: .ok,
                 headers: [.contentType: "application/json"],

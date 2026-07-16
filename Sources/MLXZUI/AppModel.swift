@@ -136,13 +136,11 @@ public final class AppModel {
         let logStore = self.logStore
         let manager = ModelManager(loader: loader)
         self.manager = manager
-        let store = self.localStore
         self.server = InferenceServer(
             manager: manager,
             logSink: { line in
                 Task { @MainActor in logStore.append(line) }
             },
-            extraModelIDs: { store.installedModels().map(\.descriptor.repoID) },
             embeddingManager: EmbeddingManager(loader: embeddingLoader),
             metricsSink: { [metrics] usage in
                 Task { @MainActor in metrics.record(usage) }
