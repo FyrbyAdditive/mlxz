@@ -96,7 +96,7 @@ import HTTPTypes
                 uri: "/v1/responses",
                 method: .post,
                 headers: [.contentType: "application/json"],
-                body: ByteBuffer(string: #"{"model":"qwen","input":"hi"}"#)
+                body: ByteBuffer(string: #"{"model":"mock/qwen","input":"hi"}"#)
             ) { response in
                 #expect(response.status == .ok)
                 let body = String(buffer: response.body)
@@ -116,7 +116,7 @@ import HTTPTypes
                 uri: "/v1/responses",
                 method: .post,
                 headers: [.contentType: "application/json"],
-                body: ByteBuffer(string: #"{"model":"qwen","stream":true,"input":"hi"}"#)
+                body: ByteBuffer(string: #"{"model":"mock/qwen","stream":true,"input":"hi"}"#)
             ) { response in
                 #expect(response.status == .ok)
                 #expect(response.headers[.contentType] == "text/event-stream")
@@ -132,7 +132,7 @@ import HTTPTypes
     @Test func acceptsStructuredInputItems() async throws {
         let engine = MockInferenceEngine(descriptor: .init(repoID: "mock/qwen"), streamingText: "ok")
         let app = await makeApp(engine: engine)
-        let body = #"{"model":"qwen","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#
+        let body = #"{"model":"mock/qwen","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}"#
         try await app.test(.router) { client in
             try await client.execute(
                 uri: "/v1/responses", method: .post,

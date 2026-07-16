@@ -22,7 +22,7 @@ import HTTPTypes
             try await client.execute(
                 uri: "/v1/completions", method: .post,
                 headers: [.contentType: "application/json"],
-                body: ByteBuffer(string: #"{"model":"qwen","prompt":"once upon"}"#)
+                body: ByteBuffer(string: #"{"model":"mock/qwen","prompt":"once upon"}"#)
             ) { response in
                 #expect(response.status == .ok)
                 let body = String(buffer: response.body)
@@ -40,7 +40,7 @@ import HTTPTypes
             try await client.execute(
                 uri: "/v1/completions", method: .post,
                 headers: [.contentType: "application/json"],
-                body: ByteBuffer(string: #"{"model":"qwen","stream":true,"prompt":"hi"}"#)
+                body: ByteBuffer(string: #"{"model":"mock/qwen","stream":true,"prompt":"hi"}"#)
             ) { response in
                 #expect(response.status == .ok)
                 let body = String(buffer: response.body)

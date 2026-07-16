@@ -26,7 +26,7 @@ import HTTPTypes
 
     private func chatBody(stream: Bool, content: String = "hi") -> ByteBuffer {
         let json = """
-        {"model":"qwen","stream":\(stream),"messages":[{"role":"user","content":"\(content)"}]}
+        {"model":"mock/qwen","stream":\(stream),"messages":[{"role":"user","content":"\(content)"}]}
         """
         return ByteBuffer(string: json)
     }
@@ -118,7 +118,27 @@ import HTTPTypes
                 #expect(response.status == .notFound)
                 let body = String(buffer: response.body)
                 #expect(body.contains("\"error\""))
-                #expect(body.contains("model_not_loaded"))
+                // Strict routing: a named-but-unloaded model → model_not_found.
+                #expect(body.contains("model_not_found"))
+            }
+        }
+    }
+
+    @Test func requestForUnloadedModelIs404() async throws {
+        let engine = MockInferenceEngine(descriptor: .init(repoID: "mock/qwen"), streamingText: "x")
+        let manager = ModelManager(loader: MockModelLoading { _ in engine })
+        try await manager.load(engine.descriptor)   // mock/qwen loaded
+        let router = RouterBuilder(manager: manager, gate: GenerationGate(), apiKey: nil, logSink: nil).build()
+        let app = Application(router: router)
+        try await app.test(.router) { client in
+            // Request a DIFFERENT, not-loaded model → 404 even though one model is loaded.
+            let body = ByteBuffer(string: #"{"model":"other/model","messages":[{"role":"user","content":"hi"}]}"#)
+            try await client.execute(
+                uri: "/v1/chat/completions", method: .post,
+                headers: [.contentType: "application/json"], body: body
+            ) { response in
+                #expect(response.status == .notFound)
+                #expect(String(buffer: response.body).contains("model_not_found"))
             }
         }
     }

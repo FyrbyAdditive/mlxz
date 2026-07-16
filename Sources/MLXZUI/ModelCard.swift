@@ -68,7 +68,7 @@ struct ModelCard: View {
             HStack(spacing: 6) {
                 Label("Loaded", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     .labelStyle(.titleAndIcon).font(.caption)
-                Button("Unload", role: .destructive) { Task { await model.unload() } }
+                Button("Unload", role: .destructive) { Task { await model.unload(repoID) } }
             }
         case .loading:
             HStack(spacing: 4) {

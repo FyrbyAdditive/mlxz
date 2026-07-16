@@ -47,6 +47,10 @@ protocol OpenAIEndpoint: Sendable {
     /// Capabilities the loaded model must have to serve this endpoint.
     static var requiredCapabilities: ModelCapabilities { get }
 
+    /// The `model` id the request targets (used to route to the right loaded engine).
+    /// nil when the request omits it.
+    func requestedModel(_ wire: WireRequest) -> String?
+
     /// Whether the decoded request asked for a streamed response.
     func isStreaming(_ wire: WireRequest) -> Bool
 

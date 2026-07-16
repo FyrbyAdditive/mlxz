@@ -9,6 +9,7 @@ struct CompletionsEndpoint: OpenAIEndpoint {
     static let path = "/v1/completions"
     static let requiredCapabilities: ModelCapabilities = [.chat]
 
+    func requestedModel(_ wire: CompletionRequest) -> String? { wire.model }
     func isStreaming(_ wire: CompletionRequest) -> Bool { wire.stream ?? false }
 
     func toGenerationRequest(_ wire: CompletionRequest, modelID: String) throws -> GenerationRequest {

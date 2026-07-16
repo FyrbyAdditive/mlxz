@@ -11,9 +11,10 @@ import Testing
         let descriptor = ModelDescriptor(repoID: "mlx-community/Qwen3.6-4B-4bit")
         try await manager.load(descriptor)
 
-        let engine = await manager.currentEngine()
-        #expect(engine != nil)
-        #expect(await manager.state.loadedDescriptor == descriptor)
+        // Exactly one loaded → currentEngine() returns it; engine(for:) resolves by id.
+        #expect(await manager.currentEngine() != nil)
+        #expect(await manager.engine(for: descriptor.repoID) != nil)
+        #expect(await manager.snapshot.loadedDescriptor == descriptor)
         #expect(await loader.requestedDescriptors == [descriptor])
     }
 
@@ -25,8 +26,8 @@ import Testing
 
         try await manager.load(base, draftModelID: drafter)
 
-        #expect(await manager.state.loadedDescriptor == base)
-        #expect(await manager.state.attachedDrafterID == drafter)
+        #expect(await manager.snapshot.loadedDescriptor == base)
+        #expect(await manager.snapshot.attachedDrafterID == drafter)
         #expect(await loader.requestedDrafters == [drafter])
     }
 
@@ -42,42 +43,80 @@ import Testing
         #expect(await loader.requestedDescriptors == [descriptor])
     }
 
-    @Test func unloadClearsEngine() async throws {
+    // MARK: - Multiple models
+
+    @Test func loadsMultipleModelsSimultaneously() async throws {
         let manager = ModelManager(loader: MockModelLoading())
-        try await manager.load(ModelDescriptor(repoID: "a/b"))
-        await manager.unload()
+        let a = ModelDescriptor(repoID: "org/a")
+        let b = ModelDescriptor(repoID: "org/b")
+
+        try await manager.load(a)
+        try await manager.load(b)
+
+        // Both resident (load does NOT unload the previous).
+        #expect(await manager.snapshot.loaded.count == 2)
+        #expect(await manager.engine(for: "org/a") != nil)
+        #expect(await manager.engine(for: "org/b") != nil)
+        // With >1 loaded, currentEngine() is ambiguous → nil.
         #expect(await manager.currentEngine() == nil)
-        if case .empty = await manager.state {} else {
-            Issue.record("expected .empty state after unload")
-        }
+        // Newest first.
+        #expect(await manager.loadedModelIDs() == ["org/b", "org/a"])
+    }
+
+    @Test func engineForUnknownIDIsNil() async throws {
+        let manager = ModelManager(loader: MockModelLoading())
+        try await manager.load(ModelDescriptor(repoID: "org/a"))
+        #expect(await manager.engine(for: "org/missing") == nil)
+    }
+
+    @Test func unloadOneKeepsOthers() async throws {
+        let manager = ModelManager(loader: MockModelLoading())
+        try await manager.load(ModelDescriptor(repoID: "org/a"))
+        try await manager.load(ModelDescriptor(repoID: "org/b"))
+
+        await manager.unload("org/a")
+
+        #expect(await manager.engine(for: "org/a") == nil)
+        #expect(await manager.engine(for: "org/b") != nil)
+        #expect(await manager.snapshot.loaded.count == 1)
+    }
+
+    @Test func evictLeastRecentlyUsedDropsOldest() async throws {
+        let manager = ModelManager(loader: MockModelLoading())
+        try await manager.load(ModelDescriptor(repoID: "org/a"))
+        try await manager.load(ModelDescriptor(repoID: "org/b"))
+        // Touch a so b becomes the least-recently-used.
+        _ = await manager.engine(for: "org/a")
+
+        let evicted = await manager.evictLeastRecentlyUsed()
+        #expect(evicted == "org/b")
+        #expect(await manager.engine(for: "org/b") == nil)
+        #expect(await manager.engine(for: "org/a") != nil)
+    }
+
+    @Test func unloadAllClearsEverything() async throws {
+        let manager = ModelManager(loader: MockModelLoading())
+        try await manager.load(ModelDescriptor(repoID: "org/a"))
+        try await manager.load(ModelDescriptor(repoID: "org/b"))
+        await manager.unloadAll()
+        #expect(await manager.snapshot.loaded.isEmpty)
+        #expect(await manager.currentEngine() == nil)
     }
 
     @Test func failedLoadSurfacesFailureState() async {
-        struct LoadFailure: Error {}
-        let loader = MockModelLoading { _ in
-            // unreachable; we throw before returning
-            MockInferenceEngine(streamingText: "")
-        }
-        // Wrap a loader that always throws.
-        let throwing = ThrowingLoader()
-        let manager = ModelManager(loader: throwing)
-        _ = loader
-
+        let manager = ModelManager(loader: ThrowingLoader())
         await #expect(throws: (any Error).self) {
             try await manager.load(ModelDescriptor(repoID: "bad/model"))
         }
-        if case .failed = await manager.state {} else {
-            Issue.record("expected .failed state")
-        }
+        #expect(await manager.snapshot.failed.contains { $0.descriptor.repoID == "bad/model" })
+        #expect(await manager.snapshot.loaded.isEmpty)
     }
 
     @Test func observersReceiveCurrentStateImmediately() async throws {
         let manager = ModelManager(loader: MockModelLoading())
         var iterator = await manager.states().makeAsyncIterator()
         let first = await iterator.next()
-        if case .empty = first {} else {
-            Issue.record("expected initial .empty state on subscription")
-        }
+        #expect(first?.loaded.isEmpty == true)
     }
 }
 

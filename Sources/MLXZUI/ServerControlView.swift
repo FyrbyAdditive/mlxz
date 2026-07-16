@@ -60,7 +60,7 @@ struct ServerControlView: View {
                     }
                 }
             } footer: {
-                if model.modelState.loadedDescriptor == nil {
+                if model.modelState.loaded.isEmpty {
                     Text("No model is loaded — the server will respond with a \"no model loaded\" "
                         + "error until you load one from the Models tab.")
                 }
@@ -87,13 +87,19 @@ struct ServerControlView: View {
     }
 
     private var modelStatusText: String {
-        switch model.modelState {
-        case .empty: "none loaded"
-        case .loading(let d, let f): "loading \(d.displayName) \(f.map { "\(Int($0 * 100))%" } ?? "")"
-        case .loaded(let d, let drafter):
-            drafter != nil ? "\(d.displayName) + MTP drafter" : d.displayName
-        case .failed(_, let msg): "failed: \(msg)"
+        let s = model.modelState
+        if !s.loaded.isEmpty {
+            if s.loaded.count == 1 {
+                let m = s.loaded[0]
+                return m.drafterID != nil ? "\(m.descriptor.displayName) + MTP drafter" : m.descriptor.displayName
+            }
+            return "\(s.loaded.count) models loaded"
         }
+        if let l = s.loading.first {
+            return "loading \(l.descriptor.displayName) \(l.fraction.map { "\(Int($0 * 100))%" } ?? "")"
+        }
+        if let f = s.failed.first { return "failed: \(f.message)" }
+        return "none loaded"
     }
 
     private func copyToPasteboard(_ text: String) {

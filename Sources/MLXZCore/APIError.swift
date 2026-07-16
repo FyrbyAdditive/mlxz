@@ -43,6 +43,18 @@ public struct APIError: Error, Sendable {
         APIError(kind: .notFound, message: "No model is currently loaded.", code: "model_not_loaded")
     }
 
+    /// The request named a `model` that isn't among the loaded models (strict routing).
+    public static func modelNotLoaded(_ id: String?) -> APIError {
+        if let id, !id.isEmpty {
+            return APIError(
+                kind: .notFound,
+                message: "Model “\(id)” is not loaded. Load it first, or check GET /v1/models.",
+                code: "model_not_found", param: "model")
+        }
+        return APIError(
+            kind: .invalidRequest, message: "`model` is required.", code: "missing_model", param: "model")
+    }
+
     public static func unsupportedCapability(_ what: String) -> APIError {
         APIError(kind: .invalidRequest, message: "The loaded model does not support \(what).", code: "unsupported_capability")
     }

@@ -82,20 +82,32 @@ prefix-cache hit/miss lines.
 
 ### Smoke tests
 
+Requests are routed strictly by the `model` field — it must exactly match a loaded model
+(the repo id you passed to `--model`). `GET /v1/models` lists what's loaded; an unknown id
+returns 404. The examples below assume you served `mlx-community/Qwen3-8B-4bit`.
+
 ```bash
+MODEL=mlx-community/Qwen3-8B-4bit
+
+curl -s http://127.0.0.1:8080/v1/models
+
 curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"m","messages":[{"role":"user","content":"hi"}]}'
+  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
 
 # streaming
 curl -sN http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+  -d "{\"model\":\"$MODEL\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
 
 # tool calling
 curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"m","messages":[{"role":"user","content":"weather in Paris?"}],
-       "tools":[{"type":"function","function":{"name":"get_weather",
-       "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}'
+  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"weather in Paris?\"}],
+       \"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",
+       \"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}}]}"
 ```
+
+> **Multiple models:** the GUI can keep several models resident (RAM permitting) and route
+> each request to the one named in its `model` field. The `mlxz-serve` CLI serves one model
+> per process today.
 
 ## Benchmark modes
 

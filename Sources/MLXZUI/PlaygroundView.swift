@@ -7,6 +7,8 @@ struct PlaygroundView: View {
     @State private var prompt = ""
     @State private var transcript: [Turn] = []
     @State private var streaming = false
+    /// Which loaded model to chat with (routing is strict). Defaults to the first loaded.
+    @State private var selectedModel: String?
 
     struct Turn: Identifiable {
         let id = UUID()
@@ -44,6 +46,15 @@ struct PlaygroundView: View {
             Divider()
 
             HStack {
+                // Model picker — only shown when more than one model is loaded.
+                if model.modelState.loaded.count > 1 {
+                    Picker("Model", selection: $selectedModel) {
+                        ForEach(model.modelState.loaded, id: \.descriptor.repoID) { m in
+                            Text(m.descriptor.displayName).tag(Optional(m.descriptor.repoID))
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                }
                 TextField("Message the loaded model…", text: $prompt, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...5)
@@ -54,6 +65,7 @@ struct PlaygroundView: View {
             .padding()
         }
         .navigationTitle("Playground")
+        .onAppear { if selectedModel == nil { selectedModel = model.modelState.loaded.first?.descriptor.repoID } }
         .overlay(alignment: .top) {
             if !model.serverRunning {
                 Text("Start the server to chat.")
@@ -76,7 +88,7 @@ struct PlaygroundView: View {
         Task {
             defer { streaming = false }
             do {
-                try await model.playgroundSend(text) { delta in
+                try await model.playgroundSend(text, model: selectedModel) { delta in
                     transcript[replyIndex].text += delta
                 }
             } catch {

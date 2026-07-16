@@ -55,50 +55,84 @@ struct ModelLibraryView: View {
         .onAppear {
             if model.installed.isEmpty { pane = .discover }
         }
+        // "This may exceed your RAM — load anyway?" (multiple models loaded).
+        .confirmationDialog(
+            "Load anyway?",
+            isPresented: Binding(
+                get: { model.pendingRAMConfirm != nil },
+                set: { if !$0 { model.pendingRAMConfirm = nil } }),
+            presenting: model.pendingRAMConfirm
+        ) { confirm in
+            Button("Load anyway") { Task { await model.confirmLoad(confirm.descriptor) } }
+            Button("Cancel", role: .cancel) { model.pendingRAMConfirm = nil }
+        } message: { confirm in
+            Text(confirm.message)
+        }
     }
 }
 
-/// The always-visible header showing the currently-loaded model (or a slim empty strip).
+/// The always-visible header showing every currently-loaded model (or a slim empty strip).
+/// Several models can be resident at once; each gets its own ⚡ badge + Unload.
 private struct LoadedModelHeader: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: loaded == nil ? "shippingbox" : "cpu")
-                .font(.title2)
-                .foregroundStyle(loaded == nil ? Color.secondary : Color.green)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 3) {
-                if let d = loaded {
-                    Text(d.displayName).font(.headline)
-                    HStack(spacing: 6) {
-                        if let spec = model.speculationStatus {
-                            Label(spec.hasPrefix("DSpark") ? "DSpark" : "MTP", systemImage: "bolt.fill")
-                                .font(.caption2)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(Color.green.opacity(0.18), in: Capsule())
-                                .foregroundStyle(.green)
-                        } else {
-                            Text("Loaded").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(d.repoID).font(.caption).foregroundStyle(.secondary)
+        let loaded = model.modelState.loaded
+        VStack(alignment: .leading, spacing: 6) {
+            if loaded.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "shippingbox").font(.title2).foregroundStyle(.secondary)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("No model loaded").font(.headline).foregroundStyle(.secondary)
+                        Text("Load one from My Models, or find a new one in Discover.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                } else {
-                    Text("No model loaded").font(.headline).foregroundStyle(.secondary)
-                    Text("Load one from My Models, or find a new one in Discover.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
                 }
-            }
-            Spacer()
-            if loaded != nil {
-                Button("Unload", role: .destructive) { Task { await model.unload() } }
+            } else {
+                if loaded.count > 1 {
+                    HStack {
+                        Text("\(loaded.count) models loaded").font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Unload all", role: .destructive) { Task { await model.unloadAll() } }
+                            .controlSize(.small)
+                    }
+                }
+                ForEach(loaded, id: \.descriptor.repoID) { m in
+                    loadedRow(m)
+                }
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(.regularMaterial)
     }
 
-    private var loaded: ModelDescriptor? { model.modelState.loadedDescriptor }
+    @ViewBuilder
+    private func loadedRow(_ m: ModelManager.Snapshot.Loaded) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "cpu").font(.title3).foregroundStyle(.green).frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(m.descriptor.displayName).font(.headline)
+                HStack(spacing: 6) {
+                    if let spec = model.speculationStatus[m.descriptor.repoID] {
+                        Label(spec.hasPrefix("DSpark") ? "DSpark" : "MTP", systemImage: "bolt.fill")
+                            .font(.caption2)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.green.opacity(0.18), in: Capsule())
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("Loaded").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(m.descriptor.repoID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer()
+            Button("Unload", role: .destructive) { Task { await model.unload(m.descriptor.repoID) } }
+                .controlSize(.small)
+        }
+    }
 }
 
 /// A sheet for the power-user "load/download by repo id" escape hatch (relocated from the

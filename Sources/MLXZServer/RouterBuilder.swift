@@ -47,10 +47,7 @@ struct RouterBuilder {
         let manager = self.manager
         let extraModelIDs = self.extraModelIDs
         router.get("/v1/models") { _, _ -> Response in
-            var ids: [String] = []
-            if let loaded = await manager.currentEngine()?.descriptor.repoID {
-                ids.append(loaded)
-            }
+            var ids: [String] = await manager.loadedModelIDs()
             ids.append(contentsOf: extraModelIDs?() ?? [])
             // De-dup preserving order.
             var seen = Set<String>()
@@ -126,14 +123,19 @@ struct RouterBuilder {
                 return errorResponse(APIError(kind: .invalidRequest, message: "Malformed request body: \(error)", code: "invalid_body"))
             }
 
-            guard let engine = await manager.currentEngine() else {
-                return errorResponse(.noModelLoaded())
+            // Strict routing: the request's `model` selects the loaded engine. 404 on a miss.
+            let requested = endpoint.requestedModel(wire)
+            guard let requested, !requested.isEmpty else {
+                return errorResponse(.modelNotLoaded(nil))
+            }
+            guard let engine = await manager.engine(for: requested) else {
+                return errorResponse(.modelNotLoaded(requested))
             }
             guard engine.capabilities.contains(E.requiredCapabilities) else {
                 return errorResponse(.unsupportedCapability("this endpoint"))
             }
 
-            let modelID = engine.descriptor.repoID
+            let modelID = requested
             let genRequest: GenerationRequest
             do {
                 genRequest = try endpoint.toGenerationRequest(wire, modelID: modelID)

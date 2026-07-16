@@ -49,11 +49,19 @@ public final class AppModel {
     }
 
     // Observable state.
-    public private(set) var modelState: ModelManager.State = .empty
+    public private(set) var modelState: ModelManager.Snapshot = .init()
     public private(set) var serverRunning: Bool = false
-    /// The loaded engine's active speculative-decoding mode ("DSpark drafter: …",
-    /// "native MTP"), nil when plain. Drives the ⚡ badge in the model library.
-    public private(set) var speculationStatus: String? = nil
+    /// Per-loaded-model active speculative-decoding mode ("DSpark drafter: …", "native
+    /// MTP"), keyed by repo id; absent when plain. Drives the ⚡ badge per model.
+    public private(set) var speculationStatus: [String: String] = [:]
+    /// A pending "this may exceed your RAM" confirmation for a load the user must approve.
+    public var pendingRAMConfirm: RAMConfirm? = nil
+
+    public struct RAMConfirm: Identifiable, Sendable {
+        public let id = UUID()
+        public let descriptor: ModelDescriptor
+        public let message: String
+    }
 
     // Live server metrics (an observable holder so the server's sink can update it without
     // capturing `self` during init).
@@ -141,14 +149,17 @@ public final class AppModel {
             }
         )
 
-        // Auto-unload the model on critical memory pressure to avoid an OS kill.
+        // Evict the least-recently-used model on critical memory pressure to avoid an OS
+        // kill, keeping the most-recently-used (likely in-use) one.
         memoryMonitor = MemoryPressureMonitor { [weak self] isCritical in
             guard isCritical else { return }
             Task { @MainActor in
                 guard let self, self.autoUnloadOnMemoryPressure,
-                      self.modelState.loadedDescriptor != nil else { return }
-                self.logStore.append("⚠️ Critical memory pressure — unloading model.")
-                await self.unload()
+                      !self.modelState.loaded.isEmpty else { return }
+                if let evicted = await self.manager.evictLeastRecentlyUsed() {
+                    self.speculationStatus[evicted] = nil
+                    self.logStore.append("⚠️ Critical memory pressure — evicted \(evicted).")
+                }
             }
         }
     }
@@ -215,13 +226,11 @@ public final class AppModel {
 
     /// The single reconciled status a card renders from (see `ModelStatus`).
     public func status(of repoID: String) -> ModelStatus {
-        let loaded = modelState.loadedDescriptor?.repoID == repoID
-        let loading: Bool = {
-            if case .loading(let d, _) = modelState { return d.repoID == repoID }
-            return false
-        }()
+        let loaded = modelState.isLoaded(repoID)
+        let loading = modelState.isLoading(repoID)
         let isDrafter = DrafterPairing.isDrafter(repoID)
-        let attached = modelState.attachedDrafterID == repoID
+        // A drafter is "attached" when it's the drafter of any loaded base model.
+        let attached = modelState.loaded.contains { $0.drafterID == repoID }
         var fraction: Double? = nil
         var failed = false
         if let dl = downloads.downloads.first(where: { $0.id == repoID }) {
@@ -240,8 +249,8 @@ public final class AppModel {
     /// Delete an installed model from the local cache. If it's the currently-loaded model, unload it
     /// first so we don't yank files out from under the running engine.
     public func deleteModel(_ model: InstalledModel) async {
-        if modelState.loadedDescriptor?.repoID == model.descriptor.repoID {
-            await unload()
+        if modelState.isLoaded(model.descriptor.repoID) {
+            await unload(model.descriptor.repoID)
         }
         if localStore.delete(model) {
             // Drop any lingering download entry so the search row stops offering "Retry" for a model
@@ -274,7 +283,25 @@ public final class AppModel {
 
     // MARK: - Model lifecycle
 
+    /// Load a model, ADDING it to the resident set (other loaded models stay). If it would
+    /// push total weights past a comfortable share of RAM, stash a confirmation instead of
+    /// loading; the UI presents it and calls `confirmLoad` to proceed.
     public func load(_ descriptor: ModelDescriptor) async {
+        if modelState.isLoaded(descriptor.repoID) { return }  // already resident
+        if let message = ramWarning(for: descriptor.repoID) {
+            pendingRAMConfirm = RAMConfirm(descriptor: descriptor, message: message)
+            return
+        }
+        await performLoad(descriptor)
+    }
+
+    /// Proceed with a load the user approved despite the RAM warning.
+    public func confirmLoad(_ descriptor: ModelDescriptor) async {
+        pendingRAMConfirm = nil
+        await performLoad(descriptor)
+    }
+
+    private func performLoad(_ descriptor: ModelDescriptor) async {
         // Auto-attach a matching installed MTP drafter (self-speculative decoding) if present —
         // unless the user disabled the drafter in Performance settings.
         let drafterID = perfSettings.useMTPDrafter
@@ -290,16 +317,36 @@ public final class AppModel {
         }
         do {
             try await manager.load(descriptor, draftModelID: drafterID)
-            let speculation = await manager.currentEngine()?.speculationStatus
-            speculationStatus = speculation
+            let speculation = await manager.engine(for: descriptor.repoID)?.speculationStatus
+            speculationStatus[descriptor.repoID] = speculation
             if let speculation {
                 logStore.append("Loaded \(descriptor.repoID) — speculative decoding ON (\(speculation))")
             } else {
                 logStore.append("Loaded \(descriptor.repoID)")
             }
         } catch {
-            speculationStatus = nil
+            speculationStatus[descriptor.repoID] = nil
             logStore.append("Load failed: \(error)")
+        }
+    }
+
+    /// A warning string if loading `repoID` alongside the already-loaded models would strain
+    /// RAM (`.tight`/`.exceeds`), else nil. Sizes come from the local cache; unknown sizes
+    /// don't warn.
+    private func ramWarning(for repoID: String) -> String? {
+        let sizeOf: (String) -> Int64? = { id in
+            self.installed.first { $0.descriptor.repoID == id }?.sizeBytes
+        }
+        guard let newSize = sizeOf(repoID) else { return nil }
+        let loadedSize = modelState.loaded.reduce(Int64(0)) { $0 + (sizeOf($1.descriptor.repoID) ?? 0) }
+        let total = loadedSize + newSize
+        switch RAMFit.of(sizeBytes: total) {
+        case .fits, .unknown: return nil
+        case .tight, .exceeds:
+            let ram = Int64(ProcessInfo.processInfo.physicalMemory)
+            return "\(ByteFormat.string(loadedSize)) already loaded + "
+                + "\(ByteFormat.string(newSize)) new ≈ \(ByteFormat.string(total)) "
+                + "of \(ByteFormat.string(ram)) RAM. This may be slow or get evicted. Load anyway?"
         }
     }
 
@@ -310,10 +357,18 @@ public final class AppModel {
         return installedModels().first { $0.descriptor.repoID == expected }?.descriptor.repoID
     }
 
-    public func unload() async {
-        await manager.unload()
-        speculationStatus = nil
-        logStore.append("Unloaded model")
+    /// Unload one model by repo id (others stay resident).
+    public func unload(_ repoID: String) async {
+        await manager.unload(repoID)
+        speculationStatus[repoID] = nil
+        logStore.append("Unloaded \(repoID)")
+    }
+
+    /// Unload every loaded model.
+    public func unloadAll() async {
+        await manager.unloadAll()
+        speculationStatus.removeAll()
+        logStore.append("Unloaded all models")
     }
 
     // MARK: - Server lifecycle
@@ -351,7 +406,9 @@ public final class AppModel {
 
     /// Send a chat message to the *running local server* and stream the reply text.
     /// Returns the full assistant text. Throws if the server isn't running.
-    public func playgroundSend(_ prompt: String, onDelta: @escaping @MainActor (String) -> Void) async throws {
+    /// Send a chat message to the running server. `modelID` selects which loaded model
+    /// answers (routing is strict now); defaults to the most-recently-loaded model.
+    public func playgroundSend(_ prompt: String, model modelID: String? = nil, onDelta: @escaping @MainActor (String) -> Void) async throws {
         guard serverRunning else {
             throw AppError.serverNotRunning
         }
@@ -367,7 +424,7 @@ public final class AppModel {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         let payload: [String: Any] = [
-            "model": modelState.loadedDescriptor?.repoID ?? "local",
+            "model": modelID ?? modelState.loadedDescriptor?.repoID ?? "local",
             "stream": true,
             "messages": [["role": "user", "content": prompt]],
         ]
@@ -407,9 +464,11 @@ public final class AppModel {
 
     // MARK: - Copilot config
 
-    /// The VS Code chatLanguageModels.json entry for the currently-loaded model, if any.
-    public func copilotConfigSnippet() -> String? {
-        guard let descriptor = modelState.loadedDescriptor else { return nil }
+    /// The VS Code chatLanguageModels.json entry for a loaded model (defaults to the
+    /// most-recently-loaded), if any.
+    public func copilotConfigSnippet(for repoID: String? = nil) -> String? {
+        let descriptor = repoID.map { ModelDescriptor(repoID: $0) } ?? modelState.loadedDescriptor
+        guard let descriptor else { return nil }
         let caps = ModelCapabilityDetector.detect(repoID: descriptor.repoID)
         let effectiveHost = bindLAN ? host : "127.0.0.1"  // advertise loopback for the local case
         return CopilotConfig.modelEntry(
