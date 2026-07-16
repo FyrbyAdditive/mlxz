@@ -60,6 +60,7 @@ var targets: [Target] = [
         swiftSettings: v6
     ),
     .testTarget(name: "MLXZHubTests", dependencies: ["MLXZHub", "MLXZCore"], swiftSettings: v6),
+    .testTarget(name: "MLXZUITests", dependencies: ["MLXZUI", "MLXZHub", "MLXZCore"], swiftSettings: v6),
 ]
 
 if includeMLX {

@@ -56,4 +56,38 @@ import Foundation
         let catalog = HubCatalog()
         _ = catalog  // smoke: no crash on default init
     }
+
+    @Test func decodesParameterCountAndSizeClass() throws {
+        let json = #"""
+        [{"id":"mlx-community/Qwen3-8B-4bit","downloads":1,
+          "safetensors":{"total":8190000000,"parameters":{"U32":1000000000,"BF16":100000000}}},
+         {"id":"mlx-community/Qwen3-0.5B-4bit","downloads":1,
+          "safetensors":{"total":494000000,"parameters":{"U32":60000000}}}]
+        """#
+        let entries = try HubCatalog.decode(Data(json.utf8))
+        #expect(entries[0].parameterCount == 8_190_000_000)
+        #expect(entries[0].sizeClass == "8.2B")
+        #expect(entries[1].sizeClass == "494M")
+        // sizeBytes still computed from per-dtype parameters.
+        #expect(entries[0].sizeBytes != nil)
+    }
+
+    @Test func authorSegmentParsed() throws {
+        let e = try HubCatalog.decode(Data(#"[{"id":"deepseek-ai/foo","downloads":0}]"#.utf8))[0]
+        #expect(e.author == "deepseek-ai")
+    }
+
+    @Test func clientSideSizeSort() {
+        func entry(_ id: String, _ size: Int?) -> CatalogEntry {
+            CatalogEntry(id: id, downloads: 0, likes: 0, tags: [], lastModified: nil, sizeBytes: size)
+        }
+        let xs = [entry("a", 3_000), entry("b", 1_000), entry("c", nil), entry("d", 2_000)]
+        let smallest = HubCatalog.sorted(xs, by: .sizeSmallest).map(\.id)
+        #expect(smallest.prefix(3) == ["b", "d", "a"])   // unknown-size sorts last
+        #expect(smallest.last == "c")
+        let largest = HubCatalog.sorted(xs, by: .sizeLargest).map(\.id)
+        #expect(largest.prefix(3) == ["a", "d", "b"])
+        // Non-size sorts are a no-op (server already ordered them).
+        #expect(HubCatalog.sorted(xs, by: .popular).map(\.id) == ["a", "b", "c", "d"])
+    }
 }

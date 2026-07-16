@@ -66,6 +66,27 @@ public final class AppModel {
     public let localStore = LocalModelStore()
     public let downloads: DownloadManager
 
+    // MARK: - Model library / Discover state
+    //
+    // Hoisted OUT of the view so it survives tab switches (it used to be view-local `@State`
+    // that reset every time the user left the Models tab). All @MainActor.
+
+    /// Cached installed models, refreshed on appear and whenever a download completes.
+    public private(set) var installed: [InstalledModel] = []
+    /// Latest Discover search results (already drafter-filtered/sorted by the catalog).
+    public private(set) var discoverResults: [CatalogEntry] = []
+    /// The live search text. Setting it schedules a debounced search.
+    public var searchQuery: String = ""
+    /// Restrict Discover to the curated mlx-community org, or search all MLX authors.
+    public var mlxCommunityOnly: Bool = true
+    public var sortKey: CatalogSort = .popular
+    public var facet: ModelFacet = .all
+    public private(set) var isSearching: Bool = false
+    /// A human-readable search error (offline / HTTP), surfaced instead of a blank list.
+    public private(set) var searchError: String? = nil
+
+    private var searchTask: Task<Void, Never>?
+
     /// When true (default), the model is auto-unloaded on critical memory pressure.
     public var autoUnloadOnMemoryPressure: Bool = true
 
@@ -143,6 +164,77 @@ public final class AppModel {
 
     public func installedModels() -> [InstalledModel] {
         localStore.installedModels()
+    }
+
+    /// Refresh the cached `installed` list (call on appear + after a download completes).
+    public func refreshInstalled() {
+        installed = localStore.installedModels()
+    }
+
+    // MARK: - Discover (HuggingFace search)
+
+    /// Schedule a debounced search for the current `searchQuery`/`sortKey`/author scope.
+    /// Cancels any pending/in-flight query first. An empty query returns HF trending.
+    public func scheduleSearch(debounce: Duration = .milliseconds(350)) {
+        searchTask?.cancel()
+        let query = searchQuery
+        let sort = sortKey
+        let author = mlxCommunityOnly ? "mlx-community" : nil
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(for: debounce)
+            guard !Task.isCancelled else { return }
+            await self?.runSearch(query: query, author: author, sort: sort)
+        }
+    }
+
+    /// Run a search immediately (used by the explicit submit + Retry). Surfaces errors into
+    /// `searchError` instead of collapsing them to an empty list.
+    public func runSearch(query: String, author: String?, sort: CatalogSort) async {
+        isSearching = true
+        searchError = nil
+        defer { isSearching = false }
+        do {
+            let entries = try await catalog.search(query: query, author: author, sort: sort)
+            guard !Task.isCancelled else { return }
+            discoverResults = entries
+        } catch is CancellationError {
+            // superseded by a newer query — leave state alone
+        } catch {
+            discoverResults = []
+            searchError = "Couldn’t reach HuggingFace. Check your connection and try again."
+        }
+    }
+
+    /// Kick off the initial Discover load (trending) if nothing has been searched yet.
+    public func loadInitialDiscoverIfNeeded() async {
+        guard discoverResults.isEmpty, searchError == nil, !isSearching else { return }
+        await runSearch(query: "", author: mlxCommunityOnly ? "mlx-community" : nil, sort: sortKey)
+    }
+
+    // MARK: - Unified per-model status
+
+    /// The single reconciled status a card renders from (see `ModelStatus`).
+    public func status(of repoID: String) -> ModelStatus {
+        let loaded = modelState.loadedDescriptor?.repoID == repoID
+        let loading: Bool = {
+            if case .loading(let d, _) = modelState { return d.repoID == repoID }
+            return false
+        }()
+        let isDrafter = DrafterPairing.isDrafter(repoID)
+        let attached = modelState.attachedDrafterID == repoID
+        var fraction: Double? = nil
+        var failed = false
+        if let dl = downloads.downloads.first(where: { $0.id == repoID }) {
+            switch dl.state {
+            case .downloading(let f, _, _): fraction = f
+            case .failed: failed = true
+            case .done, .cancelled: break
+            }
+        }
+        let onDisk = installed.contains { $0.descriptor.repoID == repoID }
+        return ModelStatus.resolve(
+            loaded: loaded, loading: loading, isDrafter: isDrafter, attachedDrafter: attached,
+            downloadFraction: fraction, downloadFailed: failed, installed: onDisk)
     }
 
     /// Delete an installed model from the local cache. If it's the currently-loaded model, unload it

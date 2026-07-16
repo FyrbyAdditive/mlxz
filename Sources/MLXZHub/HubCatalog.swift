@@ -12,8 +12,28 @@ public struct CatalogEntry: Sendable, Identifiable, Hashable {
     /// parameter counts (exact for MLX repos: U32-packed 4-bit weights + BF16 scales/norms). nil if
     /// the Hub didn't report safetensors metadata for the repo.
     public var sizeBytes: Int?
+    /// Total model parameters (from the Hub's `safetensors.total`), or nil if unreported.
+    /// Drives the human "size class" label ("8B", "27B") independent of quantization.
+    public var parameterCount: Int?
 
     public var displayName: String { id.split(separator: "/").last.map(String.init) ?? id }
+
+    /// The org/author segment of the repo id ("mlx-community"), or nil for a bare id.
+    public var author: String? { id.contains("/") ? id.split(separator: "/").first.map(String.init) : nil }
+
+    /// Human parameter "size class" — "8B", "27B", "0.5B" — from `parameterCount`. nil if unknown.
+    public var sizeClass: String? {
+        guard let p = parameterCount, p > 0 else { return nil }
+        let billions = Double(p) / 1_000_000_000
+        if billions >= 1 {
+            // 1 decimal under 10B (e.g. "3.8B"), whole numbers at/above ("27B").
+            return billions < 10
+                ? String(format: "%.1fB", billions).replacingOccurrences(of: ".0B", with: "B")
+                : String(format: "%.0fB", billions)
+        }
+        let millions = Double(p) / 1_000_000
+        return String(format: "%.0fM", millions)
+    }
 
     /// Human-readable download size, e.g. "16.1 GB" / "240 MB", or nil if unknown.
     public var sizeString: String? {
@@ -46,6 +66,27 @@ public struct CatalogEntry: Sendable, Identifiable, Hashable {
     }
 }
 
+/// How the Hub sorts search results. Downloads/likes/updated are server-side (HF supports
+/// them directly); size is a client-side re-sort over the fetched page (the Hub has no
+/// size sort). `sizeSmallest`/`sizeLargest` therefore fetch by downloads then reorder.
+public enum CatalogSort: String, Sendable, CaseIterable {
+    case popular          // downloads, desc
+    case liked            // likes, desc
+    case recentlyUpdated  // lastModified, desc
+    case sizeSmallest
+    case sizeLargest
+
+    /// The HF `sort` query value, or nil when this sort is applied client-side.
+    var serverField: String? {
+        switch self {
+        case .popular: "downloads"
+        case .liked: "likes"
+        case .recentlyUpdated: "lastModified"
+        case .sizeSmallest, .sizeLargest: nil  // client-side; fetch by downloads
+        }
+    }
+}
+
 /// Searches the HuggingFace Hub for MLX-compatible models.
 public struct HubCatalog: Sendable {
     private let session: URLSession
@@ -57,17 +98,20 @@ public struct HubCatalog: Sendable {
     }
 
     /// Search for MLX models. An empty query returns trending MLX models.
-    /// Defaults to the `mlx-community` org, which hosts the curated MLX conversions.
+    /// `author` restricts to one org (`mlx-community` for the curated MLX conversions); nil
+    /// searches all MLX authors. `sort` orders the results (size sorts are applied
+    /// client-side here since the Hub has no size sort).
     public func search(
         query: String,
         author: String? = "mlx-community",
-        limit: Int = 30
+        sort: CatalogSort = .popular,
+        limit: Int = 50
     ) async throws -> [CatalogEntry] {
         var components = URLComponents(url: endpoint.appendingPathComponent("api/models"), resolvingAgainstBaseURL: false)!
         var items = [
             URLQueryItem(name: "filter", value: "mlx"),
             URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "sort", value: "downloads"),
+            URLQueryItem(name: "sort", value: sort.serverField ?? "downloads"),
             URLQueryItem(name: "direction", value: "-1"),
         ]
         if !query.isEmpty { items.append(URLQueryItem(name: "search", value: query)) }
@@ -81,7 +125,21 @@ public struct HubCatalog: Sendable {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw APIError(kind: .server, message: "HuggingFace search failed", code: "hub_search_failed")
         }
-        return try Self.decode(data)
+        return Self.sorted(try Self.decode(data), by: sort)
+    }
+
+    /// Apply a client-side re-sort for the size cases (a no-op for server-side sorts, which
+    /// arrive already ordered). Entries with unknown size sort last so they don't jump the
+    /// list. Exposed for testing.
+    public static func sorted(_ entries: [CatalogEntry], by sort: CatalogSort) -> [CatalogEntry] {
+        switch sort {
+        case .sizeSmallest:
+            return entries.sorted { ($0.sizeBytes ?? .max) < ($1.sizeBytes ?? .max) }
+        case .sizeLargest:
+            return entries.sorted { ($0.sizeBytes ?? .min) > ($1.sizeBytes ?? .min) }
+        default:
+            return entries  // server already ordered these
+        }
     }
 
     /// Decode the Hub `/api/models` JSON array into catalog entries. Exposed for testing.
@@ -94,7 +152,8 @@ public struct HubCatalog: Sendable {
                 likes: m.likes ?? 0,
                 tags: m.tags ?? [],
                 lastModified: m.lastModified,
-                sizeBytes: sizeBytes(m.safetensors?.parameters)
+                sizeBytes: sizeBytes(m.safetensors?.parameters),
+                parameterCount: m.safetensors?.total
             )
         }.filter { !$0.id.isEmpty }
     }
