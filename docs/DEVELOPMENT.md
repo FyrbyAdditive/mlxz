@@ -105,4 +105,10 @@ and [`BASELINE.md`](../BASELINE.md); reproduction scripts in `scripts/dspark/`.
 2. `--bench-lossless` within the tie budget on a supported model; `--bench` on the 27B+MTP
    control within noise of the ledger.
 3. `Package.swift` pin points at a pushed fork revision (not the path dependency).
-4. `MLXZ_MLX=1 xcodegen generate` + Release `xcodebuild` for the app.
+4. Bump `MARKETING_VERSION` (and `CURRENT_PROJECT_VERSION`) in `project.yml`.
+5. `scripts/release.sh` — builds Release, signs with the Developer ID, notarizes, staples,
+   and writes notarized `dist/mlxz-v<version>-macos-arm64.dmg` + `.zip`. Needs the one-time `mlxz-notary`
+   notarytool credential (see the script header). The project itself builds ad-hoc (no
+   `DEVELOPMENT_TEAM` pinned), so signing/notarization live in this script, not the build.
+6. Tag `v<version>` and create the GitHub release with the zip (the script prints the
+   `git tag` / `gh release create` commands).
